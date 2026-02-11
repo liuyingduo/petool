@@ -6,6 +6,7 @@ export interface Config {
   api_key?: string
   api_base?: string
   model: string
+  system_prompt?: string
   work_directory?: string
   theme: string
   mcp_servers: McpServerConfig[]
@@ -19,7 +20,9 @@ export interface McpServerConfig {
 
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
-    model: 'gpt-4o-mini',
+    api_base: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4.7',
+    system_prompt: '',
     theme: 'dark',
     mcp_servers: []
   })

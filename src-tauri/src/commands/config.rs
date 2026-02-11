@@ -16,7 +16,7 @@ pub async fn validate_api_key(api_key: String, api_base: Option<String>) -> Resu
     use reqwest::Client;
 
     let client = Client::new();
-    let base = api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let base = api_base.unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string());
     let url = format!("{}/models", base.trim_end_matches('/'));
 
     let response = client

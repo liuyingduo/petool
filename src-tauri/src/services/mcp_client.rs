@@ -291,6 +291,24 @@ impl McpClient {
         Ok(response.result.unwrap_or_else(|| json!({})))
     }
 
+    pub async fn read_resource(&mut self, uri: &str) -> Result<Value> {
+        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport.send(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some("resource-read".to_string()),
+            method: "resources/read".to_string(),
+            params: Some(json!({
+                "uri": uri
+            })),
+        }).await?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("MCP resources/read error: {}", error.message));
+        }
+
+        Ok(response.result.unwrap_or_else(|| json!({})))
+    }
+
     pub fn list_tools(&self) -> Vec<Tool> {
         self.tools.values().cloned().collect()
     }

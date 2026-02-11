@@ -95,12 +95,13 @@ export const useChatStore = defineStore('chat', () => {
     messages.value[conversationId].push(message)
   }
 
-  function updateLastMessage(conversationId: string, content: string) {
+  function updateLastMessage(conversationId: string, chunk: string) {
     const msgs = messages.value[conversationId]
     if (msgs && msgs.length > 0) {
       const last = msgs[msgs.length - 1]
       if (last.role === 'assistant') {
-        last.content = content
+        if (!chunk) return
+        last.content += chunk
       }
     }
   }

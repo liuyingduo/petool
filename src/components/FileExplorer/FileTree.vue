@@ -59,8 +59,10 @@ interface Emits {
   (e: 'file-click', file: FileInfo): void
 }
 
-defineProps<Props>()
-defineEmits<Emits>()
+withDefaults(defineProps<Props>(), {
+  level: 0
+})
+const emit = defineEmits<Emits>()
 
 const fsStore = useFilesystemStore()
 
@@ -70,20 +72,22 @@ function isExpanded(path: string) {
 
 async function handleClick(file: FileInfo) {
   if (file.is_dir) {
+    const wasExpanded = fsStore.isExpanded(file.path)
     fsStore.toggleExpanded(file.path)
+    if (!wasExpanded) {
+      await fsStore.loadChildren(file.path)
+    }
   }
 }
 
 function handleDoubleClick(file: FileInfo) {
   if (!file.is_dir) {
-    // Emit file click event for parent to handle
+    emit('file-click', file)
   }
 }
 
 function getChildren(path: string) {
-  // For now, return empty array. In a real implementation,
-  // this would load the children of the expanded directory
-  return []
+  return fsStore.getChildren(path)
 }
 
 function getFileIcon(file: FileInfo) {

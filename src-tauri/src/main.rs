@@ -81,6 +81,7 @@ async fn main() {
             fs::select_folder,
             fs::scan_directory,
             fs::read_file,
+            fs::write_file,
             // MCP commands
             mcp::connect_server,
             mcp::disconnect_server,

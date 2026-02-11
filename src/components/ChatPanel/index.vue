@@ -25,7 +25,7 @@
       >
         <div class="message-avatar">
           <el-icon v-if="message.role === 'user'"><User /></el-icon>
-          <el-icon v-else><Robot /></el-icon>
+          <el-icon v-else><Cpu /></el-icon>
         </div>
         <div class="message-content">
           <div class="message-text" v-html="renderMarkdown(message.content)"></div>
@@ -35,7 +35,7 @@
       <!-- Loading indicator -->
       <div v-if="chatStore.streaming" class="message assistant">
         <div class="message-avatar">
-          <el-icon><Robot /></el-icon>
+          <el-icon><Cpu /></el-icon>
         </div>
         <div class="message-content">
           <div class="typing-indicator">
@@ -74,11 +74,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useChatStore } from '@/stores/chat'
-import { ChatDotRound, User, Robot, Promotion } from '@element-plus/icons-vue'
+import { ChatDotRound, User, Cpu, Promotion } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
 import { listen } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
 
 const chatStore = useChatStore()
 const inputMessage = ref('')
@@ -87,14 +87,38 @@ const inputMessage = ref('')
 listen('chat-chunk', (event) => {
   const chunk = event.payload as string
   chatStore.updateLastMessage(chatStore.currentConversationId!, chunk)
+}).catch((error) => {
+  console.error('Failed to subscribe chat-chunk:', error)
 })
 
 listen('chat-end', () => {
+  const conversationId = chatStore.currentConversationId
   chatStore.streaming = false
+  if (conversationId) {
+    void chatStore.loadMessages(conversationId)
+  }
+}).catch((error) => {
+  console.error('Failed to subscribe chat-end:', error)
 })
 
 function renderMarkdown(content: string) {
   return marked(content)
+}
+
+function getErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message
+    }
+  }
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return 'Failed to send message'
+  }
 }
 
 async function sendMessage() {
@@ -126,14 +150,14 @@ async function sendMessage() {
   chatStore.streaming = true
 
   try {
-    const window = getCurrentWindow()
-    await window.invoke('stream_message', {
+    await invoke('stream_message', {
       conversationId: chatStore.currentConversationId,
       content,
     })
   } catch (error) {
     chatStore.streaming = false
-    ElMessage.error(typeof error === 'string' ? error : 'Failed to send message')
+    console.error('stream_message failed:', error)
+    ElMessage.error(getErrorMessage(error))
   }
 }
 

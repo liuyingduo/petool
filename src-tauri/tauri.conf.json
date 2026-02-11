@@ -13,11 +13,12 @@
     "windows": [
       {
         "title": "PETool - AI Agent",
-        "width": 1400,
-        "height": 900,
+        "width": 1200,
+        "height": 760,
+        "center": true,
         "resizable": true,
         "fullscreen": false,
-        "minWidth": 1000,
+        "minWidth": 960,
         "minHeight": 600
       }
     ],

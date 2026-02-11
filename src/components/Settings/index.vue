@@ -21,17 +21,26 @@
           <el-form-item label="API Base URL">
             <el-input
               v-model="localConfig.api_base"
-              placeholder="https://api.openai.com/v1"
+              placeholder="https://open.bigmodel.cn/api/paas/v4"
             />
           </el-form-item>
 
           <el-form-item label="Model">
             <el-select v-model="localConfig.model" style="width: 100%">
-              <el-option label="GPT-4o" value="gpt-4o" />
-              <el-option label="GPT-4o-mini" value="gpt-4o-mini" />
-              <el-option label="GPT-4-turbo" value="gpt-4-turbo" />
-              <el-option label="GPT-3.5-turbo" value="gpt-3.5-turbo" />
+              <el-option label="GLM-4.7" value="glm-4.7" />
+              <el-option label="GLM-4-Flash" value="glm-4-flash" />
+              <el-option label="GLM-4-Air" value="glm-4-air" />
+              <el-option label="GLM-4" value="glm-4" />
             </el-select>
+          </el-form-item>
+
+          <el-form-item label="System Prompt">
+            <el-input
+              v-model="localConfig.system_prompt"
+              type="textarea"
+              :rows="4"
+              placeholder="Optional system prompt for assistant behavior"
+            />
           </el-form-item>
 
           <el-form-item label="Work Directory">
@@ -189,8 +198,9 @@ const showAddMcpDialog = ref(false)
 
 const localConfig = ref({
   api_key: '',
-  api_base: '',
-  model: 'gpt-4o-mini',
+  api_base: 'https://open.bigmodel.cn/api/paas/v4',
+  model: 'glm-4.7',
+  system_prompt: '',
   work_directory: '',
   theme: 'dark',
   mcp_servers: []

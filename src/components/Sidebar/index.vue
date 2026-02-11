@@ -70,12 +70,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { useConfigStore } from '@/stores/config'
 import { ElMessageBox } from 'element-plus'
 import {
   User, Plus, Setting, Search, ChatDotRound, MoreFilled, Delete
 } from '@element-plus/icons-vue'
 
 const chatStore = useChatStore()
+const configStore = useConfigStore()
 const searchQuery = ref('')
 const showSettings = ref(false)
 
@@ -88,7 +90,7 @@ const filteredConversations = computed(() => {
 
 async function handleNewChat() {
   const title = `New Chat ${chatStore.conversations.length + 1}`
-  const model = 'gpt-4o-mini'
+  const model = configStore.config.model || 'glm-4.7'
   const conv = await chatStore.createConversation(title, model)
   chatStore.setCurrentConversation(conv.id)
 }
@@ -115,6 +117,7 @@ async function handleCommand(command: string, id: string) {
 
 onMounted(() => {
   chatStore.loadConversations()
+  configStore.loadConfig()
 })
 </script>
 

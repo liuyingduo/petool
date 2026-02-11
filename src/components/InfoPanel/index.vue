@@ -45,8 +45,36 @@
             </el-button>
           </div>
 
-          <div v-else class="file-tree">
-            <FileTree :files="fsStore.files" />
+          <div v-else class="files-layout">
+            <div class="file-tree-pane">
+              <FileTree :files="fsStore.files" @file-click="handleFileClick" />
+            </div>
+            <div class="file-editor-pane">
+              <div v-if="!selectedFilePath" class="empty-state">
+                <p>Double-click a file to preview and edit</p>
+              </div>
+              <template v-else>
+                <div class="editor-header">
+                  <div class="text-ellipsis">{{ selectedFilePath }}</div>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :disabled="!isFileDirty || savingFile"
+                    :loading="savingFile"
+                    @click="handleSaveFile"
+                  >
+                    Save
+                  </el-button>
+                </div>
+                <el-input
+                  v-model="selectedFileContent"
+                  type="textarea"
+                  :rows="24"
+                  resize="none"
+                  class="file-editor-textarea"
+                />
+              </template>
+            </div>
           </div>
         </div>
       </el-tab-pane>
@@ -54,11 +82,7 @@
       <!-- Skills Tab -->
       <el-tab-pane label="Skills" name="skills">
         <div class="tab-content">
-          <div class="empty-state">
-            <el-icon :size="48"><Box /></el-icon>
-            <p>No skills installed</p>
-            <el-button size="small">Browse Skills</el-button>
-          </div>
+          <SkillsManager />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -68,20 +92,55 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useConfigStore } from '@/stores/config'
 import { useFilesystemStore } from '@/stores/filesystem'
 import SettingsDialog from '../Settings/index.vue'
 import FileTree from '../FileExplorer/FileTree.vue'
-import { Setting, FolderOpened, Box } from '@element-plus/icons-vue'
+import SkillsManager from '../SkillsManager/index.vue'
+import { Setting, FolderOpened } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const configStore = useConfigStore()
 const fsStore = useFilesystemStore()
 const activeTab = ref('settings')
 const showSettings = ref(false)
+const selectedFilePath = ref('')
+const selectedFileContent = ref('')
+const originalFileContent = ref('')
+const savingFile = ref(false)
+
+const isFileDirty = computed(() => selectedFileContent.value !== originalFileContent.value)
 
 async function handleSelectFolder() {
   await fsStore.selectFolder()
+}
+
+async function handleFileClick(file: { path: string; is_dir: boolean }) {
+  if (file.is_dir) return
+  try {
+    const content = await fsStore.readFile(file.path)
+    selectedFilePath.value = file.path
+    selectedFileContent.value = content
+    originalFileContent.value = content
+  } catch (error) {
+    ElMessage.error('Failed to open file')
+  }
+}
+
+async function handleSaveFile() {
+  if (!selectedFilePath.value || !isFileDirty.value) return
+
+  savingFile.value = true
+  try {
+    await fsStore.writeFile(selectedFilePath.value, selectedFileContent.value)
+    originalFileContent.value = selectedFileContent.value
+    ElMessage.success('File saved')
+  } catch (error) {
+    ElMessage.error('Failed to save file')
+  } finally {
+    savingFile.value = false
+  }
 }
 </script>
 
@@ -174,7 +233,48 @@ async function handleSelectFolder() {
   margin: 0;
 }
 
-.file-tree {
+.files-layout {
   min-height: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 12px;
+}
+
+.file-tree-pane {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px;
+  overflow: auto;
+}
+
+.file-editor-pane {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.file-editor-textarea {
+  flex: 1;
+}
+
+.file-editor-textarea :deep(.el-textarea__inner) {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: Consolas, Monaco, monospace;
 }
 </style>

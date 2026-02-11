@@ -129,9 +129,16 @@ pub async fn disconnect_all_servers(
 
 #[tauri::command]
 pub async fn read_resource(
-    _mcp_manager: tauri::State<'_, McpState>,
+    mcp_manager: tauri::State<'_, McpState>,
     server: String,
     uri: String,
 ) -> Result<String, String> {
-    Ok(format!("Resource content from {} for {}", server, uri))
+    let mut manager = mcp_manager.lock().await;
+    let client = manager.get_client_mut(&server)
+        .ok_or_else(|| format!("Server '{}' not found", server))?;
+
+    let result = client.read_resource(&uri).await
+        .map_err(|e| e.to_string())?;
+
+    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
 }
