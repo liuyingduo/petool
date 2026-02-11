@@ -45,11 +45,19 @@ pub async fn execute_skill(
 
 #[tauri::command]
 pub async fn toggle_skill(
-    _skill_manager: tauri::State<'_, SkillManagerState>,
-    _skill_id: String,
-    _enabled: bool,
+    skill_manager: tauri::State<'_, SkillManagerState>,
+    skill_id: String,
+    enabled: bool,
 ) -> Result<(), String> {
-    // This would require adding a toggle method to SkillManager
-    // For now, we just return success
-    Ok(())
+    let mut manager = skill_manager.lock().await;
+    manager.set_skill_enabled(&skill_id, enabled).map_err(|e: anyhow::Error| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_skill(
+    skill_manager: tauri::State<'_, SkillManagerState>,
+    skill_id: String,
+) -> Result<Skill, String> {
+    let mut manager = skill_manager.lock().await;
+    manager.update_skill(&skill_id).await.map_err(|e: anyhow::Error| e.to_string())
 }

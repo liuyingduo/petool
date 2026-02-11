@@ -59,8 +59,8 @@ pub async fn call_tool(
     name: String,
     arguments: Value,
 ) -> Result<String, String> {
-    let manager = mcp_manager.lock().await;
-    let client = manager.get_client(&server)
+    let mut manager = mcp_manager.lock().await;
+    let client = manager.get_client_mut(&server)
         .ok_or_else(|| format!("Server '{}' not found", server))?;
 
     let result = client.call_tool(&name, arguments).await
@@ -97,6 +97,34 @@ pub async fn list_resources(
         }
     }
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn list_servers(
+    mcp_manager: tauri::State<'_, McpState>,
+) -> Result<Vec<McpServer>, String> {
+    let manager = mcp_manager.lock().await;
+    let mut servers = Vec::new();
+
+    for (_server_name, client) in manager.list_clients() {
+        servers.push(McpServer {
+            name: client.name.clone(),
+            capabilities: client.capabilities.clone(),
+            tools: client.list_tools(),
+            prompts: client.list_prompts(),
+            resources: client.list_resources(),
+        });
+    }
+
+    Ok(servers)
+}
+
+#[tauri::command]
+pub async fn disconnect_all_servers(
+    mcp_manager: tauri::State<'_, McpState>,
+) -> Result<(), String> {
+    let mut manager = mcp_manager.lock().await;
+    manager.shutdown_all().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

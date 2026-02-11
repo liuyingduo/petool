@@ -8,7 +8,8 @@
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node scripts/tauri-dev.mjs",
+    "tauri:dev:raw": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:debug": "tauri build --debug"
   },

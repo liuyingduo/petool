@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
 use std::process::{Child, Command, Stdio};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JsonRpcRequest {
+pub(crate) struct JsonRpcRequest {
     jsonrpc: String,
     id: Option<String>,
     method: String,
@@ -16,7 +16,7 @@ struct JsonRpcRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JsonRpcResponse {
+pub(crate) struct JsonRpcResponse {
     jsonrpc: String,
     id: Option<String>,
     result: Option<Value>,
@@ -32,7 +32,7 @@ struct JsonRpcError {
 
 #[async_trait]
 pub trait McpTransport: Send + Sync {
-    async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse>;
+    async fn send(&mut self, request: JsonRpcRequest) -> Result<JsonRpcResponse>;
     async fn initialize(&mut self) -> Result<ServerCapabilities>;
     async fn shutdown(&mut self) -> Result<()>;
 }
@@ -53,11 +53,11 @@ impl StdioTransport {
         Ok(Self { child: Some(child) })
     }
 
-    fn send_request(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        let child = self.child.as_ref().ok_or_else(|| anyhow!("Child process not available"))?;
+    fn send_request(&mut self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+        let child = self.child.as_mut().ok_or_else(|| anyhow!("Child process not available"))?;
 
-        let mut stdin = child.stdin.as_ref().ok_or_else(|| anyhow!("Stdin not available"))?;
-        let stdout = child.stdout.as_ref().ok_or_else(|| anyhow!("Stdout not available"))?;
+        let stdin = child.stdin.as_mut().ok_or_else(|| anyhow!("Stdin not available"))?;
+        let stdout = child.stdout.as_mut().ok_or_else(|| anyhow!("Stdout not available"))?;
 
         // Send request
         let request_str = serde_json::to_string(request)?;
@@ -83,7 +83,7 @@ impl StdioTransport {
 
 #[async_trait]
 impl McpTransport for StdioTransport {
-    async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
+    async fn send(&mut self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
         self.send_request(&request)
     }
 
@@ -140,7 +140,7 @@ impl HttpTransport {
 
 #[async_trait]
 impl McpTransport for HttpTransport {
-    async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
+    async fn send(&mut self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
         let response = self.client
             .post(&self.url)
             .json(&request)
@@ -192,26 +192,103 @@ impl McpClient {
     }
 
     pub async fn refresh_tools(&mut self) -> Result<()> {
-        let _ = self.transport.as_ref().ok_or_else(|| anyhow!("Transport not available"))?;
-        // TODO: Implement actual tools refresh
+        if self.capabilities.tools != Some(true) {
+            return Ok(());
+        }
+
+        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport.send(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some("tools-list".to_string()),
+            method: "tools/list".to_string(),
+            params: None,
+        }).await?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("MCP tools/list error: {}", error.message));
+        }
+
+        if let Some(result) = response.result {
+            if let Some(tools) = result.get("tools")
+                .and_then(|v| serde_json::from_value::<Vec<Tool>>(v.clone()).ok())
+            {
+                self.tools = tools.into_iter().map(|tool| (tool.name.clone(), tool)).collect();
+            }
+        }
         Ok(())
     }
 
     pub async fn refresh_prompts(&mut self) -> Result<()> {
-        let _ = self.transport.as_ref().ok_or_else(|| anyhow!("Transport not available"))?;
-        // TODO: Implement actual prompts refresh
+        if self.capabilities.prompts != Some(true) {
+            return Ok(());
+        }
+
+        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport.send(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some("prompts-list".to_string()),
+            method: "prompts/list".to_string(),
+            params: None,
+        }).await?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("MCP prompts/list error: {}", error.message));
+        }
+
+        if let Some(result) = response.result {
+            if let Some(prompts) = result.get("prompts")
+                .and_then(|v| serde_json::from_value::<Vec<Prompt>>(v.clone()).ok())
+            {
+                self.prompts = prompts.into_iter().map(|prompt| (prompt.name.clone(), prompt)).collect();
+            }
+        }
         Ok(())
     }
 
     pub async fn refresh_resources(&mut self) -> Result<()> {
-        let _ = self.transport.as_ref().ok_or_else(|| anyhow!("Transport not available"))?;
-        // TODO: Implement actual resources refresh
+        if self.capabilities.resources != Some(true) {
+            return Ok(());
+        }
+
+        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport.send(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some("resources-list".to_string()),
+            method: "resources/list".to_string(),
+            params: None,
+        }).await?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("MCP resources/list error: {}", error.message));
+        }
+
+        if let Some(result) = response.result {
+            if let Some(resources) = result.get("resources")
+                .and_then(|v| serde_json::from_value::<Vec<Resource>>(v.clone()).ok())
+            {
+                self.resources = resources.into_iter().map(|resource| (resource.uri.clone(), resource)).collect();
+            }
+        }
         Ok(())
     }
 
-    pub async fn call_tool(&self, _name: &str, _arguments: Value) -> Result<Value> {
-        // TODO: Implement actual tool calling
-        Ok(json!({"result": "tool_called"}))
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
+        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport.send(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some("tool-call".to_string()),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        }).await?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow!("MCP tools/call error: {}", error.message));
+        }
+
+        Ok(response.result.unwrap_or_else(|| json!({})))
     }
 
     pub fn list_tools(&self) -> Vec<Tool> {
@@ -257,25 +334,29 @@ impl McpManager {
         self.clients.get(name)
     }
 
+    pub fn get_client_mut(&mut self, name: &str) -> Option<&mut McpClient> {
+        self.clients.get_mut(name)
+    }
+
     pub fn remove_client(&mut self, name: &str) -> Option<McpClient> {
         self.clients.remove(name)
     }
 
     pub fn list_all_tools(&self) -> Vec<(String, Tool)> {
         let mut all_tools = Vec::new();
-        for (server_name, client) in &self.clients {
+        for client in self.clients.values() {
             for tool in client.list_tools() {
-                all_tools.push((server_name.clone(), tool));
+                all_tools.push((client.name.clone(), tool));
             }
         }
         all_tools
     }
 
     pub fn list_clients(&self) -> Vec<(String, &McpClient)> {
-        self.clients.iter().map(|(k, v)| (k.clone(), v)).collect()
+        self.clients.values().map(|client| (client.name.clone(), client)).collect()
     }
 
-    pub async fn shutdown_all(mut self) -> Result<()> {
+    pub async fn shutdown_all(&mut self) -> Result<()> {
         for (_name, client) in self.clients.drain() {
             client.shutdown().await?;
         }

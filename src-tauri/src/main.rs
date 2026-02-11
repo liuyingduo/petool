@@ -12,6 +12,7 @@ use services::database::Database;
 use services::mcp_client::McpManager;
 use services::skill_manager::SkillManager;
 use state::AppState;
+use state::AppStateInner;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tauri::Manager;
@@ -40,15 +41,25 @@ async fn main() {
             let skill_manager_result = SkillManager::new(skills_dir);
             if let Ok(skill_manager) = skill_manager_result {
                 let skill_manager: Arc<tokio::sync::Mutex<SkillManager>> = Arc::new(tokio::sync::Mutex::new(skill_manager));
-                app.manage(skill_manager);
+                app.manage(skill_manager.clone());
+
+                tauri::async_runtime::spawn(async move {
+                    let mut manager = skill_manager.lock().await;
+                    if let Err(err) = manager.load_skills().await {
+                        eprintln!("Failed to load skills: {}", err);
+                    }
+                });
             }
 
             // Initialize database in background
             let app_state_clone = app_state.clone();
             tauri::async_runtime::spawn(async move {
                 if let Ok(db) = Database::new(db_path).await {
-                    let mut state = app_state_clone.lock();
-                    state.set_db(db);
+                    if let Ok(mut state) = app_state_clone.lock() {
+                        state.set_db(db);
+                    } else {
+                        eprintln!("Failed to acquire app state lock while setting database");
+                    }
                 }
             });
 
@@ -77,6 +88,8 @@ async fn main() {
             mcp::call_tool,
             mcp::list_prompts,
             mcp::list_resources,
+            mcp::list_servers,
+            mcp::disconnect_all_servers,
             mcp::read_resource,
             // Skills commands
             skills::list_skills,
@@ -84,9 +97,8 @@ async fn main() {
             skills::uninstall_skill,
             skills::execute_skill,
             skills::toggle_skill,
+            skills::update_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-use state::AppStateInner;

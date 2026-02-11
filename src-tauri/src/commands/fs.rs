@@ -12,14 +12,18 @@ pub struct FileInfo {
 #[tauri::command]
 pub async fn select_folder(window: tauri::Window) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
 
-    let folder_path = window
+    window
         .dialog()
-        .select_folder()
-        .await
-        .map_err(|e| e.to_string())?;
+        .file()
+        .pick_folder(move |folder_path| {
+            let _ = tx.send(folder_path);
+        });
 
-    Ok(folder_path.map(|p| p.to_string_lossy().to_string()))
+    let folder_path = rx.await.map_err(|e| e.to_string())?;
+
+    Ok(folder_path.map(|p| p.to_string()))
 }
 
 #[tauri::command]

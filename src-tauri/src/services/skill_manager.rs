@@ -49,33 +49,13 @@ impl SkillManager {
         }
 
         let skill_json_content = fs::read_to_string(&skill_json_path)?;
-        let skill_meta: serde_json::Value = serde_json::from_str(&skill_json_content)?;
+        let skill_meta: SkillManifest = serde_json::from_str(&skill_json_content)?;
 
-        let default_id = uuid::Uuid::new_v4().to_string();
-        let id = skill_meta.get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&default_id)
-            .to_string();
-
-        let name = skill_meta.get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Skill name not found"))?
-            .to_string();
-
-        let version = skill_meta.get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("1.0.0")
-            .to_string();
-
-        let description = skill_meta.get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let author = skill_meta.get("author")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown")
-            .to_string();
+        let id = skill_meta.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let name = skill_meta.name;
+        let version = skill_meta.version;
+        let description = skill_meta.description;
+        let author = skill_meta.author;
 
         // Determine skill type
         let script_type = if path.join("main.rs").exists() {
@@ -298,5 +278,12 @@ impl SkillManager {
         // Uninstall and reinstall to update
         // In a real implementation, you'd store the repo URL
         Err(anyhow!("Update not implemented - requires storing repo URL"))
+    }
+
+    pub fn set_skill_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
+        let skill = self.skills.get_mut(id)
+            .ok_or_else(|| anyhow!("Skill not found: {}", id))?;
+        skill.enabled = enabled;
+        Ok(())
     }
 }

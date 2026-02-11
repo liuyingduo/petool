@@ -39,7 +39,6 @@
 </template>
 
 <script setup lang="ts">
-import { defineProps, defineEmits } from 'vue'
 import { ArrowRight, Folder, FolderOpened, Document } from '@element-plus/icons-vue'
 import { useFilesystemStore } from '@/stores/filesystem'
 
