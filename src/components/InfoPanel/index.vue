@@ -114,6 +114,9 @@ const isFileDirty = computed(() => selectedFileContent.value !== originalFileCon
 
 async function handleSelectFolder() {
   await fsStore.selectFolder()
+  selectedFilePath.value = ''
+  selectedFileContent.value = ''
+  originalFileContent.value = ''
 }
 
 async function handleFileClick(file: { path: string; is_dir: boolean }) {

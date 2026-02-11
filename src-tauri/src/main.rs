@@ -17,6 +17,100 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tauri::Manager;
 
+#[cfg(target_os = "windows")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, RGN_OR,
+};
+
+#[cfg(target_os = "windows")]
+fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let size = window.inner_size().map_err(|err| err.to_string())?;
+    let width = size.width as i32;
+    let height = size.height as i32;
+
+    if width <= 0 || height <= 0 {
+        return Ok(());
+    }
+
+    const TOP_OFFSET: i32 = 26;
+    const CORNER_RADIUS: i32 = 56;
+    const EAR_WIDTH: i32 = 96;
+    const EAR_HEIGHT: i32 = 56;
+    const EAR_GAP: i32 = 118;
+
+    let body_top = TOP_OFFSET.min(height.saturating_sub(1)).max(0);
+    let center_x = width / 2;
+    let left_ear_x = center_x - EAR_GAP - (EAR_WIDTH / 2);
+    let right_ear_x = center_x + EAR_GAP - (EAR_WIDTH / 2);
+
+    let body = unsafe {
+        CreateRoundRectRgn(
+            0,
+            body_top,
+            width + 1,
+            height + 1,
+            CORNER_RADIUS,
+            CORNER_RADIUS,
+        )
+    };
+    let left_ear = unsafe {
+        CreateRoundRectRgn(
+            left_ear_x,
+            0,
+            left_ear_x + EAR_WIDTH,
+            EAR_HEIGHT,
+            EAR_WIDTH,
+            EAR_HEIGHT,
+        )
+    };
+    let right_ear = unsafe {
+        CreateRoundRectRgn(
+            right_ear_x,
+            0,
+            right_ear_x + EAR_WIDTH,
+            EAR_HEIGHT,
+            EAR_WIDTH,
+            EAR_HEIGHT,
+        )
+    };
+    let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
+
+    if body.0 == 0 || left_ear.0 == 0 || right_ear.0 == 0 || combined.0 == 0 {
+        return Err("failed to create window region".to_string());
+    }
+
+    unsafe {
+        CombineRgn(combined, body, left_ear, RGN_OR);
+        CombineRgn(combined, combined, right_ear, RGN_OR);
+    }
+
+    let hwnd = match window.window_handle().map_err(|err| err.to_string())?.as_raw() {
+        RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get()),
+        _ => return Err("unsupported window handle type".to_string()),
+    };
+
+    let result = unsafe { SetWindowRgn(hwnd, combined, true) };
+
+    unsafe {
+        DeleteObject(HGDIOBJ(body.0));
+        DeleteObject(HGDIOBJ(left_ear.0));
+        DeleteObject(HGDIOBJ(right_ear.0));
+    }
+
+    if result == 0 {
+        unsafe {
+            DeleteObject(HGDIOBJ(combined.0));
+        }
+        return Err("failed to apply window region".to_string());
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tauri::Builder::default()
@@ -62,6 +156,24 @@ async fn main() {
                     }
                 }
             });
+
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(main_window) = app.get_webview_window("main") {
+                    if let Err(err) = apply_pet_window_shape(&main_window) {
+                        eprintln!("Failed to apply shaped window region: {}", err);
+                    }
+
+                    let window_for_events = main_window.clone();
+                    main_window.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::Resized(_)) {
+                            if let Err(err) = apply_pet_window_shape(&window_for_events) {
+                                eprintln!("Failed to update shaped window region: {}", err);
+                            }
+                        }
+                    });
+                }
+            }
 
             Ok(())
         })

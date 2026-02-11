@@ -38,6 +38,23 @@
           <el-icon><Cpu /></el-icon>
         </div>
         <div class="message-content">
+          <div v-if="reasoningStream" class="reasoning-stream">
+            {{ reasoningStream }}
+          </div>
+
+          <div v-if="toolStreamItems.length > 0" class="tool-stream-list">
+            <div
+              v-for="item in toolStreamItems"
+              :key="item.id"
+              class="tool-stream-card"
+              :class="item.status"
+            >
+              <div class="tool-title">{{ item.name || 'tool' }}</div>
+              <div v-if="item.arguments" class="tool-args">{{ item.arguments }}</div>
+              <div v-if="item.result" class="tool-result">{{ item.result }}</div>
+            </div>
+          </div>
+
           <div class="typing-indicator">
             <span></span>
             <span></span>
@@ -82,6 +99,14 @@ import { invoke } from '@tauri-apps/api/core'
 
 const chatStore = useChatStore()
 const inputMessage = ref('')
+const reasoningStream = ref('')
+const toolStreamItems = ref<Array<{
+  id: string
+  name: string
+  arguments: string
+  result: string
+  status: 'running' | 'done' | 'error'
+}>>([])
 
 // Listen for streaming events
 listen('chat-chunk', (event) => {
@@ -94,11 +119,81 @@ listen('chat-chunk', (event) => {
 listen('chat-end', () => {
   const conversationId = chatStore.currentConversationId
   chatStore.streaming = false
+  reasoningStream.value = ''
+  toolStreamItems.value = []
   if (conversationId) {
     void chatStore.loadMessages(conversationId)
   }
 }).catch((error) => {
   console.error('Failed to subscribe chat-end:', error)
+})
+
+listen('chat-reasoning', (event) => {
+  const chunk = event.payload as string
+  if (!chunk) return
+  reasoningStream.value += chunk
+}).catch((error) => {
+  console.error('Failed to subscribe chat-reasoning:', error)
+})
+
+listen('chat-tool-call', (event) => {
+  const payload = event.payload as {
+    toolCallId?: string
+    name?: string
+    argumentsChunk?: string
+  }
+
+  const id = payload.toolCallId || `tool-${Date.now()}`
+  const existing = toolStreamItems.value.find((item) => item.id === id)
+  if (!existing) {
+    toolStreamItems.value.push({
+      id,
+      name: payload.name || 'tool',
+      arguments: payload.argumentsChunk || '',
+      result: '',
+      status: 'running'
+    })
+    return
+  }
+
+  if (payload.name) {
+    existing.name = payload.name
+  }
+  if (payload.argumentsChunk) {
+    existing.arguments += payload.argumentsChunk
+  }
+}).catch((error) => {
+  console.error('Failed to subscribe chat-tool-call:', error)
+})
+
+listen('chat-tool-result', (event) => {
+  const payload = event.payload as {
+    toolCallId?: string
+    name?: string
+    result?: string | null
+    error?: string | null
+  }
+
+  const id = payload.toolCallId || `tool-${Date.now()}`
+  let item = toolStreamItems.value.find((entry) => entry.id === id)
+  if (!item) {
+    item = {
+      id,
+      name: payload.name || 'tool',
+      arguments: '',
+      result: '',
+      status: 'running'
+    }
+    toolStreamItems.value.push(item)
+  }
+
+  if (payload.name) {
+    item.name = payload.name
+  }
+  item.status = payload.error ? 'error' : 'done'
+  item.result = payload.error ? payload.error : (payload.result || '')
+}).catch((error) => {
+  console.error('Failed to subscribe chat-tool-result:', error)
 })
 
 function renderMarkdown(content: string) {
@@ -126,6 +221,8 @@ async function sendMessage() {
   if (!content || chatStore.streaming) return
 
   inputMessage.value = ''
+  reasoningStream.value = ''
+  toolStreamItems.value = []
 
   // Add user message
   const userMsg: Message = {
@@ -247,6 +344,11 @@ interface Message {
   border-radius: 4px 12px 12px 12px;
 }
 
+.message.tool .message-content {
+  background-color: #2f3440;
+  border-radius: 6px;
+}
+
 .message-avatar {
   width: 36px;
   height: 36px;
@@ -307,6 +409,52 @@ interface Message {
 
 .typing-indicator span:nth-child(3) {
   animation-delay: 0.4s;
+}
+
+.reasoning-stream {
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.tool-stream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tool-stream-card {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tool-stream-card.done {
+  border-color: #2f9e44;
+}
+
+.tool-stream-card.error {
+  border-color: #f03e3e;
+}
+
+.tool-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.tool-args,
+.tool-result {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text-secondary);
 }
 
 @keyframes typing {

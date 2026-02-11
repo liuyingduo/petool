@@ -248,18 +248,24 @@ pub async fn send_message(
     content: String,
 ) -> Result<String, String> {
     let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-    let api_key = config.api_key.ok_or("API key not set".to_string())?;
+    let api_key = config.api_key.clone().ok_or("API key not set".to_string())?;
     let llm_service = LlmService::new(api_key, config.api_base.clone());
 
     let pool = {
         let guard = state.lock().map_err(|e| e.to_string())?;
         guard.db().pool().clone()
     };
+    let model_to_use = sqlx::query_scalar::<_, String>("SELECT model FROM conversations WHERE id = ?")
+        .bind(&conversation_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| config.model.clone());
 
     insert_message(&pool, &conversation_id, "user", &content, None).await?;
 
     let mut messages = load_conversation_context(&pool, &conversation_id).await?;
-    if let Some(system_prompt) = config.system_prompt {
+    if let Some(system_prompt) = config.system_prompt.clone() {
         if !system_prompt.trim().is_empty() {
             messages.insert(
                 0,
@@ -274,7 +280,7 @@ pub async fn send_message(
     }
 
     let response = llm_service
-        .chat(&config.model, messages)
+        .chat(&model_to_use, messages)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -292,7 +298,7 @@ pub async fn stream_message(
     content: String,
 ) -> Result<(), String> {
     let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-    let api_key = config.api_key.ok_or("API key not set".to_string())?;
+    let api_key = config.api_key.clone().ok_or("API key not set".to_string())?;
     let llm_service = LlmService::new(api_key, config.api_base.clone());
     let mcp_state = mcp_manager.inner();
 
@@ -303,6 +309,12 @@ pub async fn stream_message(
         let guard = state.lock().map_err(|e| e.to_string())?;
         guard.db().pool().clone()
     };
+    let model_to_use = sqlx::query_scalar::<_, String>("SELECT model FROM conversations WHERE id = ?")
+        .bind(&conversation_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| config.model.clone());
 
     insert_message(&pool, &conversation_id, "user", &content, None).await?;
 
@@ -326,7 +338,7 @@ pub async fn stream_message(
         let window_for_stream = window.clone();
         let stream_result = llm_service
             .chat_stream_with_tools(
-                &config.model,
+                &model_to_use,
                 context_messages.clone(),
                 if mcp_tools.is_empty() {
                     None

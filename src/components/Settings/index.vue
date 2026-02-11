@@ -222,7 +222,16 @@ const dialogVisible = computed({
 watch(() => props.modelValue, (val) => {
   if (val) {
     // Load current config
-    localConfig.value = { ...configStore.config }
+    localConfig.value = {
+      api_key: '',
+      api_base: 'https://open.bigmodel.cn/api/paas/v4',
+      model: 'glm-4.7',
+      system_prompt: '',
+      work_directory: '',
+      theme: 'dark',
+      mcp_servers: [],
+      ...configStore.config
+    }
   }
 })
 
