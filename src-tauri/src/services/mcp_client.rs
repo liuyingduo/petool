@@ -1,10 +1,10 @@
 use crate::models::mcp::*;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,31 +53,81 @@ impl StdioTransport {
         Ok(Self { child: Some(child) })
     }
 
-    fn send_request(&mut self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        let child = self.child.as_mut().ok_or_else(|| anyhow!("Child process not available"))?;
+    fn write_message(writer: &mut impl Write, payload: &str) -> Result<()> {
+        write!(writer, "Content-Length: {}\r\n\r\n", payload.len())?;
+        writer.write_all(payload.as_bytes())?;
+        writer.flush()?;
+        Ok(())
+    }
 
-        let stdin = child.stdin.as_mut().ok_or_else(|| anyhow!("Stdin not available"))?;
-        let stdout = child.stdout.as_mut().ok_or_else(|| anyhow!("Stdout not available"))?;
+    fn read_message(reader: &mut impl Read) -> Result<String> {
+        let mut header_bytes = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut found_separator = false;
 
-        // Send request
-        let request_str = serde_json::to_string(request)?;
-        writeln!(stdin, "Content-Length: {}", request_str.len())?;
-        writeln!(stdin)?;
-        writeln!(stdin, "{}", request_str)?;
-        stdin.flush()?;
-
-        // Read response (simple single-line JSON for now)
-        let mut stdout_reader = std::io::BufReader::new(stdout);
-        let mut line = String::new();
-        stdout_reader.read_line(&mut line)?;
-
-        if let Some(json_start) = line.find('{') {
-            let json_str = &line[json_start..];
-            let response: JsonRpcResponse = serde_json::from_str(json_str)?;
-            return Ok(response);
+        while header_bytes.len() < 64 * 1024 {
+            reader.read_exact(&mut byte)?;
+            header_bytes.push(byte[0]);
+            if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
+                found_separator = true;
+                break;
+            }
         }
 
-        Err(anyhow!("No valid JSON response"))
+        if !found_separator {
+            return Err(anyhow!("Failed to read complete MCP response headers"));
+        }
+
+        let header_text = String::from_utf8(header_bytes).map_err(|e| anyhow!(e.to_string()))?;
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow!("Missing Content-Length header in MCP response"))?;
+
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body)?;
+        String::from_utf8(body).map_err(|e| anyhow!(e.to_string()))
+    }
+
+    fn send_notification(&mut self, request: &JsonRpcRequest) -> Result<()> {
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| anyhow!("Child process not available"))?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("Stdin not available"))?;
+        let request_str = serde_json::to_string(request)?;
+        Self::write_message(stdin, &request_str)
+    }
+
+    fn send_request(&mut self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| anyhow!("Child process not available"))?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("Stdin not available"))?;
+        let stdout = child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| anyhow!("Stdout not available"))?;
+
+        let request_str = serde_json::to_string(request)?;
+        Self::write_message(stdin, &request_str)?;
+        let response_payload = Self::read_message(stdout)?;
+        let response: JsonRpcResponse = serde_json::from_str(&response_payload)?;
+        Ok(response)
     }
 }
 
@@ -108,11 +158,25 @@ impl McpTransport for StdioTransport {
             return Err(anyhow!("MCP initialization error: {}", error.message));
         }
 
-        Ok(ServerCapabilities {
-            tools: Some(true),
-            prompts: Some(true),
-            resources: Some(true),
-        })
+        let capabilities = response
+            .result
+            .as_ref()
+            .and_then(|value| value.get("capabilities").cloned())
+            .and_then(|value| serde_json::from_value::<ServerCapabilities>(value).ok())
+            .unwrap_or(ServerCapabilities {
+                tools: Some(true),
+                prompts: Some(true),
+                resources: Some(true),
+            });
+
+        let _ = self.send_notification(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "notifications/initialized".to_string(),
+            params: Some(json!({})),
+        });
+
+        Ok(capabilities)
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -141,11 +205,7 @@ impl HttpTransport {
 #[async_trait]
 impl McpTransport for HttpTransport {
     async fn send(&mut self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
-        let response = self.client
-            .post(&self.url)
-            .json(&request)
-            .send()
-            .await?;
+        let response = self.client.post(&self.url).json(&request).send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("HTTP error: {}", response.status()));
@@ -196,23 +256,32 @@ impl McpClient {
             return Ok(());
         }
 
-        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
-        let response = transport.send(JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some("tools-list".to_string()),
-            method: "tools/list".to_string(),
-            params: None,
-        }).await?;
+        let transport = self
+            .transport
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport
+            .send(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some("tools-list".to_string()),
+                method: "tools/list".to_string(),
+                params: None,
+            })
+            .await?;
 
         if let Some(error) = response.error {
             return Err(anyhow!("MCP tools/list error: {}", error.message));
         }
 
         if let Some(result) = response.result {
-            if let Some(tools) = result.get("tools")
+            if let Some(tools) = result
+                .get("tools")
                 .and_then(|v| serde_json::from_value::<Vec<Tool>>(v.clone()).ok())
             {
-                self.tools = tools.into_iter().map(|tool| (tool.name.clone(), tool)).collect();
+                self.tools = tools
+                    .into_iter()
+                    .map(|tool| (tool.name.clone(), tool))
+                    .collect();
             }
         }
         Ok(())
@@ -223,23 +292,32 @@ impl McpClient {
             return Ok(());
         }
 
-        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
-        let response = transport.send(JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some("prompts-list".to_string()),
-            method: "prompts/list".to_string(),
-            params: None,
-        }).await?;
+        let transport = self
+            .transport
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport
+            .send(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some("prompts-list".to_string()),
+                method: "prompts/list".to_string(),
+                params: None,
+            })
+            .await?;
 
         if let Some(error) = response.error {
             return Err(anyhow!("MCP prompts/list error: {}", error.message));
         }
 
         if let Some(result) = response.result {
-            if let Some(prompts) = result.get("prompts")
+            if let Some(prompts) = result
+                .get("prompts")
                 .and_then(|v| serde_json::from_value::<Vec<Prompt>>(v.clone()).ok())
             {
-                self.prompts = prompts.into_iter().map(|prompt| (prompt.name.clone(), prompt)).collect();
+                self.prompts = prompts
+                    .into_iter()
+                    .map(|prompt| (prompt.name.clone(), prompt))
+                    .collect();
             }
         }
         Ok(())
@@ -250,39 +328,53 @@ impl McpClient {
             return Ok(());
         }
 
-        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
-        let response = transport.send(JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some("resources-list".to_string()),
-            method: "resources/list".to_string(),
-            params: None,
-        }).await?;
+        let transport = self
+            .transport
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport
+            .send(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some("resources-list".to_string()),
+                method: "resources/list".to_string(),
+                params: None,
+            })
+            .await?;
 
         if let Some(error) = response.error {
             return Err(anyhow!("MCP resources/list error: {}", error.message));
         }
 
         if let Some(result) = response.result {
-            if let Some(resources) = result.get("resources")
+            if let Some(resources) = result
+                .get("resources")
                 .and_then(|v| serde_json::from_value::<Vec<Resource>>(v.clone()).ok())
             {
-                self.resources = resources.into_iter().map(|resource| (resource.uri.clone(), resource)).collect();
+                self.resources = resources
+                    .into_iter()
+                    .map(|resource| (resource.uri.clone(), resource))
+                    .collect();
             }
         }
         Ok(())
     }
 
     pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
-        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
-        let response = transport.send(JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some("tool-call".to_string()),
-            method: "tools/call".to_string(),
-            params: Some(json!({
-                "name": name,
-                "arguments": arguments
-            })),
-        }).await?;
+        let transport = self
+            .transport
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport
+            .send(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some("tool-call".to_string()),
+                method: "tools/call".to_string(),
+                params: Some(json!({
+                    "name": name,
+                    "arguments": arguments
+                })),
+            })
+            .await?;
 
         if let Some(error) = response.error {
             return Err(anyhow!("MCP tools/call error: {}", error.message));
@@ -292,15 +384,20 @@ impl McpClient {
     }
 
     pub async fn read_resource(&mut self, uri: &str) -> Result<Value> {
-        let transport = self.transport.as_mut().ok_or_else(|| anyhow!("Transport not available"))?;
-        let response = transport.send(JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some("resource-read".to_string()),
-            method: "resources/read".to_string(),
-            params: Some(json!({
-                "uri": uri
-            })),
-        }).await?;
+        let transport = self
+            .transport
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not available"))?;
+        let response = transport
+            .send(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some("resource-read".to_string()),
+                method: "resources/read".to_string(),
+                params: Some(json!({
+                    "uri": uri
+                })),
+            })
+            .await?;
 
         if let Some(error) = response.error {
             return Err(anyhow!("MCP resources/read error: {}", error.message));
@@ -371,7 +468,10 @@ impl McpManager {
     }
 
     pub fn list_clients(&self) -> Vec<(String, &McpClient)> {
-        self.clients.values().map(|client| (client.name.clone(), client)).collect()
+        self.clients
+            .values()
+            .map(|client| (client.name.clone(), client))
+            .collect()
     }
 
     pub async fn shutdown_all(&mut self) -> Result<()> {

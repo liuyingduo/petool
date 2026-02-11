@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -136,7 +136,8 @@ impl LlmService {
             tool_stream: None,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
@@ -163,11 +164,13 @@ impl LlmService {
         messages: Vec<ChatMessage>,
         mut callback: impl FnMut(String) + Send + 'a,
     ) -> Result<()> {
-        let _ = self.chat_stream_with_tools(model, messages, None, move |event| {
-            if let LlmStreamEvent::Content(chunk) = event {
-                callback(chunk);
-            }
-        }).await?;
+        let _ = self
+            .chat_stream_with_tools(model, messages, None, move |event| {
+                if let LlmStreamEvent::Content(chunk) = event {
+                    callback(chunk);
+                }
+            })
+            .await?;
 
         Ok(())
     }
@@ -190,7 +193,8 @@ impl LlmService {
             tool_stream: tools.as_ref().map(|_| true),
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
@@ -261,7 +265,8 @@ impl LlmService {
                     .and_then(|v| v.as_array())
                 {
                     for item in tool_calls {
-                        let index = item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let index =
+                            item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                         let entry = tool_call_builders.entry(index).or_default();
 
                         let id = item

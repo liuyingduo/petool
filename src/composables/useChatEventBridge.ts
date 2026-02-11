@@ -14,6 +14,14 @@ export interface ToolStreamItem {
   status: 'running' | 'done' | 'error'
 }
 
+export interface ToolApprovalRequest {
+  requestId: string
+  conversationId: string
+  toolCallId: string
+  toolName: string
+  arguments: string
+}
+
 interface ChatStoreBridge {
   currentConversationId: string | null
   streaming: boolean
@@ -25,6 +33,7 @@ interface ChatEventBridgeOptions {
   activeAssistantMessageId: Ref<string | null>
   reasoningByMessage: Ref<Record<string, ReasoningEntry>>
   toolStreamItems: Ref<ToolStreamItem[]>
+  onToolApprovalRequest?: (request: ToolApprovalRequest) => void
   onStreamEnd: () => void
 }
 
@@ -64,8 +73,8 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
 
   unlistenFns.push(
     await listen('chat-tool-call', (event) => {
-      const payload = event.payload as { toolCallId?: string; name?: string; argumentsChunk?: string }
-      const id = payload.toolCallId || `tool-${Date.now()}`
+      const payload = event.payload as { index?: number; toolCallId?: string; name?: string; argumentsChunk?: string }
+      const id = payload.toolCallId || `tool-${payload.index ?? 0}`
       let item = options.toolStreamItems.value.find((entry) => entry.id === id)
 
       if (!item) {
@@ -92,6 +101,22 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
       if (payload.name) item.name = payload.name
       item.status = payload.error ? 'error' : 'done'
       item.result = payload.error || payload.result || ''
+    })
+  )
+
+  unlistenFns.push(
+    await listen('chat-tool-approval-request', (event) => {
+      const payload = event.payload as Partial<ToolApprovalRequest>
+      if (!options.onToolApprovalRequest) return
+      if (!payload.requestId || !payload.conversationId || !payload.toolCallId || !payload.toolName) return
+
+      options.onToolApprovalRequest({
+        requestId: payload.requestId,
+        conversationId: payload.conversationId,
+        toolCallId: payload.toolCallId,
+        toolName: payload.toolName,
+        arguments: payload.arguments || ''
+      })
     })
   )
 

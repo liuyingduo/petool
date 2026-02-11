@@ -1,5 +1,5 @@
 use crate::models::skill::*;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
@@ -51,7 +51,9 @@ impl SkillManager {
         let skill_json_content = fs::read_to_string(&skill_json_path)?;
         let skill_meta: SkillManifest = serde_json::from_str(&skill_json_content)?;
 
-        let id = skill_meta.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = skill_meta
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let name = skill_meta.name;
         let version = skill_meta.version;
         let description = skill_meta.description;
@@ -98,7 +100,13 @@ impl SkillManager {
 
         // Clone the repository
         let status = Command::new("git")
-            .args(["clone", "--depth", "1", repo_url, skill_path.to_str().unwrap()])
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                repo_url,
+                skill_path.to_str().unwrap(),
+            ])
             .status()?;
 
         if !status.success() {
@@ -113,7 +121,8 @@ impl SkillManager {
     }
 
     pub async fn uninstall_skill(&mut self, id: &str) -> Result<()> {
-        let _skill = self.get_skill(id)
+        let _skill = self
+            .get_skill(id)
             .ok_or_else(|| anyhow!("Skill not found: {}", id))?;
 
         // Find and remove the skill directory
@@ -128,7 +137,8 @@ impl SkillManager {
                 if skill_json_path.exists() {
                     if let Ok(content) = fs::read_to_string(&skill_json_path) {
                         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if meta.get("id")
+                            if meta
+                                .get("id")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s == id)
                                 .unwrap_or(false)
@@ -152,7 +162,8 @@ impl SkillManager {
         id: &str,
         params: HashMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let skill = self.get_skill(id)
+        let skill = self
+            .get_skill(id)
             .ok_or_else(|| anyhow!("Skill not found: {}", id))?;
 
         if !skill.enabled {
@@ -172,7 +183,8 @@ impl SkillManager {
                 if skill_json_path.exists() {
                     if let Ok(content) = fs::read_to_string(&skill_json_path) {
                         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if meta.get("id")
+                            if meta
+                                .get("id")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s == id)
                                 .unwrap_or(false)
@@ -189,12 +201,8 @@ impl SkillManager {
         let skill_path = skill_path.ok_or_else(|| anyhow!("Skill path not found"))?;
 
         match skill.script_type {
-            SkillType::JavaScript => {
-                self.execute_javascript_skill(&skill_path, params).await
-            }
-            SkillType::Rust => {
-                self.execute_rust_skill(&skill_path, params).await
-            }
+            SkillType::JavaScript => self.execute_javascript_skill(&skill_path, params).await,
+            SkillType::Rust => self.execute_rust_skill(&skill_path, params).await,
         }
     }
 
@@ -260,9 +268,7 @@ impl SkillManager {
         }
 
         let params_json = serde_json::to_string(&params)?;
-        let output = Command::new(&exe_path)
-            .arg(&params_json)
-            .output()?;
+        let output = Command::new(&exe_path).arg(&params_json).output()?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr);
@@ -277,11 +283,15 @@ impl SkillManager {
     pub async fn update_skill(&mut self, _id: &str) -> Result<Skill> {
         // Uninstall and reinstall to update
         // In a real implementation, you'd store the repo URL
-        Err(anyhow!("Update not implemented - requires storing repo URL"))
+        Err(anyhow!(
+            "Update not implemented - requires storing repo URL"
+        ))
     }
 
     pub fn set_skill_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
-        let skill = self.skills.get_mut(id)
+        let skill = self
+            .skills
+            .get_mut(id)
             .ok_or_else(|| anyhow!("Skill not found: {}", id))?;
         skill.enabled = enabled;
         Ok(())

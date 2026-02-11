@@ -3,8 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 pub fn get_config_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
 
     let app_config_dir = config_dir.join("petool");
     fs::create_dir_all(&app_config_dir)?;

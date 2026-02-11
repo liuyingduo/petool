@@ -91,6 +91,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { useConfigStore } from '@/stores/config'
+import { useFilesystemStore } from '@/stores/filesystem'
 import { ChatDotRound, User, Cpu, Promotion } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
@@ -98,6 +100,8 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 
 const chatStore = useChatStore()
+const configStore = useConfigStore()
+const fsStore = useFilesystemStore()
 const inputMessage = ref('')
 const reasoningStream = ref('')
 const toolStreamItems = ref<Array<{
@@ -138,12 +142,13 @@ listen('chat-reasoning', (event) => {
 
 listen('chat-tool-call', (event) => {
   const payload = event.payload as {
+    index?: number
     toolCallId?: string
     name?: string
     argumentsChunk?: string
   }
 
-  const id = payload.toolCallId || `tool-${Date.now()}`
+  const id = payload.toolCallId || `tool-${payload.index ?? 0}`
   const existing = toolStreamItems.value.find((item) => item.id === id)
   if (!existing) {
     toolStreamItems.value.push({
@@ -168,13 +173,14 @@ listen('chat-tool-call', (event) => {
 
 listen('chat-tool-result', (event) => {
   const payload = event.payload as {
+    index?: number
     toolCallId?: string
     name?: string
     result?: string | null
     error?: string | null
   }
 
-  const id = payload.toolCallId || `tool-${Date.now()}`
+  const id = payload.toolCallId || `tool-${payload.index ?? 0}`
   let item = toolStreamItems.value.find((entry) => entry.id === id)
   if (!item) {
     item = {
@@ -250,6 +256,7 @@ async function sendMessage() {
     await invoke('stream_message', {
       conversationId: chatStore.currentConversationId,
       content,
+      workspaceDirectory: fsStore.currentDirectory || configStore.config.work_directory || null
     })
   } catch (error) {
     chatStore.streaming = false

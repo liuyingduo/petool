@@ -21,7 +21,10 @@ pub async fn install_skill(
     repo_url: String,
 ) -> Result<Skill, String> {
     let mut manager = skill_manager.lock().await;
-    manager.install_skill(&repo_url).await.map_err(|e: anyhow::Error| e.to_string())
+    manager
+        .install_skill(&repo_url)
+        .await
+        .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
@@ -30,7 +33,10 @@ pub async fn uninstall_skill(
     skill_id: String,
 ) -> Result<(), String> {
     let mut manager = skill_manager.lock().await;
-    manager.uninstall_skill(&skill_id).await.map_err(|e: anyhow::Error| e.to_string())
+    manager
+        .uninstall_skill(&skill_id)
+        .await
+        .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
@@ -40,7 +46,10 @@ pub async fn execute_skill(
     params: HashMap<String, Value>,
 ) -> Result<Value, String> {
     let manager = skill_manager.lock().await;
-    manager.execute_skill(&skill_id, params).await.map_err(|e: anyhow::Error| e.to_string())
+    manager
+        .execute_skill(&skill_id, params)
+        .await
+        .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
@@ -50,7 +59,9 @@ pub async fn toggle_skill(
     enabled: bool,
 ) -> Result<(), String> {
     let mut manager = skill_manager.lock().await;
-    manager.set_skill_enabled(&skill_id, enabled).map_err(|e: anyhow::Error| e.to_string())
+    manager
+        .set_skill_enabled(&skill_id, enabled)
+        .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
@@ -59,5 +70,8 @@ pub async fn update_skill(
     skill_id: String,
 ) -> Result<Skill, String> {
     let mut manager = skill_manager.lock().await;
-    manager.update_skill(&skill_id).await.map_err(|e: anyhow::Error| e.to_string())
+    manager
+        .update_skill(&skill_id)
+        .await
+        .map_err(|e: anyhow::Error| e.to_string())
 }

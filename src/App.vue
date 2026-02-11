@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="petool-app">
     <div class="bg-blob blob-a"></div>
     <div class="bg-blob blob-b"></div>
@@ -26,7 +26,7 @@
         aria-hidden="true"
         @mousedown.left.prevent="handleManualDrag"
       ></div>
-      <div class="pet-eyes-container" aria-hidden="true">
+      <div class="pet-eyes-container" :class="{ 'is-asking': Boolean(activeToolApproval) }" aria-hidden="true">
         <div class="pet-eye">
           <div class="eye-pupil"></div>
         </div>
@@ -41,8 +41,8 @@
         <button
           class="window-control-btn"
           type="button"
-          :title="isWindowMaximized ? '退出全屏' : '全屏'"
-          :aria-label="isWindowMaximized ? '退出全屏' : '全屏'"
+          :title="isWindowMaximized ? '还原' : '最大化'"
+          :aria-label="isWindowMaximized ? '还原' : '最大化'"
           @click="handleToggleMaximize"
         >
           <span class="material-icons-round">{{ isWindowMaximized ? 'filter_none' : 'check_box_outline_blank' }}</span>
@@ -76,7 +76,7 @@
         </div>
 
         <div class="sidebar-footer">
-          <div class="user">Alex</div>
+          <div class="user">用户</div>
           <button class="settings-btn" @click="showSettings = true">
             <span class="material-icons-round">settings</span>
           </button>
@@ -89,7 +89,7 @@
 
           <div v-if="createDialogVisible" class="create-dialog">
             <div class="dialog-head">
-              <div class="dialog-title">Petool 肚子空空，准备开工！</div>
+              <div class="dialog-title">Petool 请求你的指引</div>
               <button class="dialog-close" @click="closeCreateDialog">
                 <span class="material-icons-round">close</span>
               </button>
@@ -104,15 +104,15 @@
               @keydown.enter.prevent="handleCreateConversation"
             />
 
-            <label>投喂文件夹</label>
+            <label>工作区文件夹</label>
             <button class="folder-zone" @click="handleSelectFolder">
               <span class="material-icons-round">folder_open</span>
-              <span>把文件夹投喂给 Petool</span>
-              <small>{{ fsStore.currentDirectory || '我会把它“吞下”，然后帮你干活！' }}</small>
+              <span>把文件夹交给 Petool</span>
+              <small>{{ fsStore.currentDirectory || '我会在这个工作区里帮你完成任务。' }}</small>
             </button>
 
             <div v-if="recentFolders.length > 0" class="recent-wrap">
-              <div class="recent-title">最近常吃</div>
+              <div class="recent-title">最近使用</div>
               <div class="recent-list">
                 <button
                   v-for="folder in recentFolders"
@@ -125,10 +125,10 @@
               </div>
             </div>
 
-            <button class="start-btn" @click="handleCreateConversation">开饭啦！</button>
+            <button class="start-btn" @click="handleCreateConversation">开始</button>
           </div>
 
-          <div v-else class="message-list no-scrollbar">
+          <div v-else class="message-list no-scrollbar" @click="handleMarkdownLinkClick">
             <div
               v-for="message in chatStore.currentMessages"
               :key="message.id"
@@ -179,6 +179,58 @@
           </div>
         </div>
 
+        <div v-if="activeToolApproval" class="tool-approval-card">
+          <div class="tool-approval-header">
+            <div class="tool-approval-title">{{ approvalTitle }}</div>
+            <div class="tool-approval-subtitle">{{ approvalSubtitle }}</div>
+          </div>
+
+          <div v-if="approvalFolderCard" class="approval-folder-wrap">
+            <div class="approval-folder-card">
+              <div class="approval-folder-icon">
+                <span class="material-icons-round">folder</span>
+              </div>
+              <div class="approval-folder-content">
+                <div class="approval-folder-name">{{ approvalFolderCard.name }}</div>
+                <div class="approval-folder-path">{{ approvalFolderCard.location }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="approvalDetailText" class="tool-approval-detail">
+            {{ approvalDetailText }}
+          </div>
+
+          <pre
+            v-if="activeToolApproval.arguments && !approvalFolderCard && !approvalDetailText"
+            class="tool-approval-args"
+          >{{ activeToolApproval.arguments }}</pre>
+
+          <div class="tool-approval-actions">
+            <button
+              class="tool-approval-btn deny"
+              :disabled="resolvingToolApproval"
+              @click="resolveToolApproval('deny')"
+            >
+              先不要看
+            </button>
+            <button
+              class="tool-approval-btn trust"
+              :disabled="resolvingToolApproval"
+              @click="resolveToolApproval('allow_always')"
+            >
+              以后都相信你
+            </button>
+            <button
+              class="tool-approval-btn primary"
+              :disabled="resolvingToolApproval"
+              @click="resolveToolApproval('allow_once')"
+            >
+              准许执行 ✅
+            </button>
+          </div>
+        </div>
+
         <div class="input-bar" :class="{ disabled: createDialogVisible || !chatStore.currentConversationId }">
           <button class="attach-btn" @click="handleSelectFolder" :disabled="createDialogVisible">
             <span class="material-icons-round">attach_file</span>
@@ -211,11 +263,17 @@ import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { open as openExternal } from '@tauri-apps/plugin-shell'
 import { useChatStore, type Message } from './stores/chat'
 import { useConfigStore } from './stores/config'
 import { useFilesystemStore } from './stores/filesystem'
 import SettingsDialog from './components/Settings/index.vue'
-import { registerChatEventListeners, type ReasoningEntry, type ToolStreamItem } from './composables/useChatEventBridge'
+import {
+  registerChatEventListeners,
+  type ReasoningEntry,
+  type ToolApprovalRequest,
+  type ToolStreamItem
+} from './composables/useChatEventBridge'
 import { usePetWindowBehavior } from './composables/usePetWindowBehavior'
 
 const chatStore = useChatStore()
@@ -230,6 +288,8 @@ const workspaceRef = ref<HTMLElement | null>(null)
 const activeAssistantMessageId = ref<string | null>(null)
 const reasoningByMessage = ref<Record<string, ReasoningEntry>>({})
 const toolStreamItems = ref<ToolStreamItem[]>([])
+const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
+const resolvingToolApproval = ref(false)
 const isWindowMaximized = ref(false)
 const unlistenFns: Array<() => void> = []
 const appWindow = getCurrentWindow()
@@ -242,6 +302,109 @@ const recentFolders = computed(() => {
   return Array.from(new Set(paths)).slice(0, 3)
 })
 
+const activeToolApproval = computed(() => {
+  const request = pendingToolApproval.value
+  if (!request || !chatStore.currentConversationId) return null
+  return request.conversationId === chatStore.currentConversationId ? request : null
+})
+
+const parsedApprovalArgs = computed<Record<string, unknown>>(() => {
+  const raw = activeToolApproval.value?.arguments
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // ignore parse errors and fallback to empty args
+  }
+  return {}
+})
+
+const approvalFolderCard = computed<{ name: string; location: string } | null>(() => {
+  const request = activeToolApproval.value
+  if (!request || normalizeToolName(request.toolName) !== 'workspace_list_directory') return null
+
+  const args = parsedApprovalArgs.value
+  const requestedPath = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : '.'
+  const workspaceRoot = fsStore.currentDirectory || configStore.config.work_directory || ''
+  const resolvedPath = workspaceRoot
+    ? resolveRequestedPath(workspaceRoot, requestedPath)
+    : requestedPath
+
+  const name = getPathName(resolvedPath) || '当前目录'
+  return {
+    name,
+    location: truncateMiddle(resolvedPath, 68)
+  }
+})
+
+const approvalTitle = computed(() => {
+  const request = activeToolApproval.value
+  if (!request) return ''
+
+  const toolName = normalizeToolName(request.toolName)
+  if (toolName === 'workspace_list_directory') return 'Petool 想先看看这里...'
+  if (toolName === 'skills_install_from_repo') return 'Petool 想帮你安装一个技能'
+  if (toolName.startsWith('mcp__')) return 'Petool 想调用外部工具'
+  return 'Petool 请求你的指引'
+})
+
+const approvalSubtitle = computed(() => {
+  const request = activeToolApproval.value
+  if (!request) return ''
+
+  const toolName = normalizeToolName(request.toolName)
+
+  if (toolName === 'workspace_list_directory') {
+    return '为了完成任务，我需要先查看这个文件夹。'
+  }
+  if (toolName === 'workspace_read_file') {
+    return '为了继续处理，我需要先读取这个文件。'
+  }
+  if (toolName === 'workspace_write_file') {
+    return '为了应用你的修改请求，我需要写入这个文件。'
+  }
+  if (toolName === 'workspace_run_command') {
+    return '为了完成你的请求，我需要运行一条本地命令。'
+  }
+  if (toolName === 'skills_install_from_repo') {
+    return '为了解决当前问题，我希望从仓库安装一个技能。'
+  }
+  if (toolName.startsWith('mcp__')) {
+    return `我需要调用外部工具：${renderToolLabel(request.toolName)}`
+  }
+  return `我即将调用工具：${renderToolLabel(request.toolName)}`
+})
+
+const approvalDetailText = computed(() => {
+  const request = activeToolApproval.value
+  if (!request || approvalFolderCard.value) return ''
+
+  const toolName = normalizeToolName(request.toolName)
+  const args = parsedApprovalArgs.value
+
+  if ((toolName === 'workspace_read_file' || toolName === 'workspace_write_file') && typeof args.path === 'string') {
+    return `路径：${truncateMiddle(args.path, 72)}`
+  }
+  if (toolName === 'workspace_run_command' && typeof args.command === 'string') {
+    return `命令：${truncateMiddle(args.command, 72)}`
+  }
+  if (toolName === 'skills_install_from_repo') {
+    const repoUrlRaw =
+      (typeof args.repo_url === 'string' && args.repo_url.trim()) ||
+      (typeof args.repoUrl === 'string' && args.repoUrl.trim())
+    if (repoUrlRaw) {
+      return `仓库：${truncateMiddle(repoUrlRaw, 72)}`
+    }
+  }
+  if (toolName.startsWith('mcp__')) {
+    return `工具：${renderToolLabel(request.toolName)}`
+  }
+
+  return ''
+})
 onMounted(async () => {
   await Promise.all([chatStore.loadConversations(), configStore.loadConfig()])
   if (chatStore.conversations.length > 0) {
@@ -259,7 +422,14 @@ onMounted(async () => {
       activeAssistantMessageId,
       reasoningByMessage,
       toolStreamItems,
-      onStreamEnd: collapseActiveReasoning
+      onToolApprovalRequest: (request) => {
+        pendingToolApproval.value = request
+      },
+      onStreamEnd: () => {
+        collapseActiveReasoning()
+        pendingToolApproval.value = null
+        resolvingToolApproval.value = false
+      }
     }))
   )
 
@@ -285,6 +455,30 @@ onBeforeUnmount(() => {
 
 function renderMarkdown(content: string) {
   return marked.parse(content || '', { async: false }) as string
+}
+
+function isExternalHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value)
+}
+
+async function handleMarkdownLinkClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return
+
+  const anchor = target.closest('a') as HTMLAnchorElement | null
+  if (!anchor) return
+
+  const href = (anchor.getAttribute('href') || '').trim()
+  if (!href || !isExternalHttpUrl(href)) return
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  try {
+    await openExternal(href)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, '打开外部链接失败'))
+  }
 }
 
 function formatTime(isoString: string) {
@@ -356,7 +550,27 @@ async function handleSelectConversation(id: string) {
   chatStore.streaming = false
   activeAssistantMessageId.value = null
   toolStreamItems.value = []
+  pendingToolApproval.value = null
+  resolvingToolApproval.value = false
   createDialogVisible.value = false
+}
+
+async function resolveToolApproval(decision: 'allow_once' | 'allow_always' | 'deny') {
+  const request = activeToolApproval.value
+  if (!request || resolvingToolApproval.value) return
+
+  resolvingToolApproval.value = true
+  try {
+    await invoke('resolve_tool_approval', {
+      requestId: request.requestId,
+      decision
+    })
+    pendingToolApproval.value = null
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, '处理工具权限失败'))
+  } finally {
+    resolvingToolApproval.value = false
+  }
 }
 
 async function handleCreateConversation() {
@@ -381,6 +595,7 @@ async function sendMessage() {
   const conversationId = chatStore.currentConversationId
   inputMessage.value = ''
   toolStreamItems.value = []
+  pendingToolApproval.value = null
 
   const userMsg: Message = {
     id: Date.now().toString(),
@@ -404,13 +619,19 @@ async function sendMessage() {
   chatStore.streaming = true
 
   try {
-    await invoke('stream_message', { conversationId, content })
+    await invoke('stream_message', {
+      conversationId,
+      content,
+      workspaceDirectory: fsStore.currentDirectory || configStore.config.work_directory || null
+    })
   } catch (error) {
     chatStore.streaming = false
     removePendingAssistantMessage(conversationId, assistantMsg.id)
     activeAssistantMessageId.value = null
     toolStreamItems.value = []
-    ElMessage.error(getErrorMessage(error, '发送失败'))
+    pendingToolApproval.value = null
+    resolvingToolApproval.value = false
+    ElMessage.error(getErrorMessage(error, '发送消息失败'))
   }
 }
 
@@ -462,7 +683,69 @@ function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message.trim().length > 0) return error.message
   return fallback
 }
+
+function normalizeToolName(name: string) {
+  const raw = name.trim()
+  if (!raw) return raw
+
+  if (raw.startsWith('workspace_') || raw.startsWith('skills_')) return raw
+
+  const mcpPrefixMatch = raw.match(/^mcp__[^_]+__(.+)$/)
+  if (mcpPrefixMatch && mcpPrefixMatch[1]) {
+    return `mcp__${mcpPrefixMatch[1]}`
+  }
+
+  return raw
+}
+
+function renderToolLabel(name: string) {
+  const raw = name.trim()
+  if (!raw) return '未知工具'
+
+  if (raw.startsWith('mcp__')) {
+    const parts = raw.split('__')
+    if (parts.length >= 3) {
+      const server = parts[1] || 'mcp'
+      const tool = parts.slice(2).join('__') || 'tool'
+      return `${server}.${tool}`
+    }
+  }
+
+  return raw
+}
+
+function resolveRequestedPath(base: string, target: string) {
+  const cleanedBase = base.trim()
+  const cleanedTarget = target.trim()
+  if (!cleanedBase) return cleanedTarget
+  if (!cleanedTarget || cleanedTarget === '.') return cleanedBase
+
+  const isAbsoluteTarget =
+    /^[a-zA-Z]:[\\/]/.test(cleanedTarget) || cleanedTarget.startsWith('\\\\') || cleanedTarget.startsWith('/')
+  if (isAbsoluteTarget) return cleanedTarget
+
+  const sep = cleanedBase.includes('\\') ? '\\' : '/'
+  const normalizedBase = cleanedBase.replace(/[\\/]+$/, '')
+  const normalizedTarget = cleanedTarget.replace(/^[\\/]+/, '')
+  return `${normalizedBase}${sep}${normalizedTarget}`
+}
+
+function getPathName(input: string) {
+  const value = input.trim().replace(/[\\/]+$/, '')
+  if (!value) return ''
+  const parts = value.split(/[\\/]+/)
+  return parts[parts.length - 1] || ''
+}
+
+function truncateMiddle(input: string, max = 64) {
+  if (input.length <= max) return input
+  const head = Math.ceil((max - 1) / 2)
+  const tail = Math.floor((max - 1) / 2)
+  return `${input.slice(0, head)}...${input.slice(input.length - tail)}`
+}
 </script>
 
 <style scoped src="./styles/app-shell.css"></style>
+
+
 

@@ -180,6 +180,11 @@ label {
   transform: translateY(4px) scale(1.1);
 }
 
+.pet-eyes-container.is-asking .eye-pupil {
+  transform: translateY(2px) scale(0.86);
+  animation: askLook 1.6s ease-in-out infinite;
+}
+
 .window-controls {
   position: absolute;
   top: 10px;
@@ -632,6 +637,162 @@ label {
   white-space: pre-wrap;
 }
 
+.tool-approval-card {
+  margin: 0 24px 12px;
+  border-radius: 20px;
+  border: 1px solid #eadfca;
+  background: #fffdfa;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 8px 16px -14px rgba(44, 62, 51, 0.25);
+}
+
+.tool-approval-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-approval-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: #2c3e33;
+}
+
+.tool-approval-subtitle {
+  font-size: 13px;
+  color: #57534e;
+  line-height: 1.5;
+}
+
+.approval-folder-wrap {
+  display: flex;
+}
+
+.approval-folder-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #dce8df;
+  border-radius: 14px;
+  background: #f9fdf9;
+  padding: 10px 12px;
+}
+
+.approval-folder-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: #dcefdc;
+  color: #2f7a4d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.approval-folder-icon .material-icons-round {
+  font-size: 22px;
+}
+
+.approval-folder-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-folder-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: #243328;
+}
+
+.approval-folder-path {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-approval-detail {
+  border-radius: 10px;
+  border: 1px solid #e7e5e4;
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #57534e;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.tool-approval-args {
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e7e5e4;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: #44403c;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-approval-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tool-approval-btn {
+  border: 1px solid #d6d3d1;
+  border-radius: 999px;
+  background: #fff;
+  color: #44403c;
+  font-size: 13px;
+  font-weight: 700;
+  height: 36px;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.tool-approval-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -10px rgba(44, 62, 51, 0.45);
+}
+
+.tool-approval-btn.primary {
+  border-color: #4a7c59;
+  background: #4a7c59;
+  color: #fff;
+}
+
+.tool-approval-btn.trust {
+  border-color: #d9e9d9;
+  background: #eef8ee;
+  color: #2f7a4d;
+}
+
+.tool-approval-btn.deny {
+  border-color: #efb3b3;
+  background: #fff;
+  color: #c34b4b;
+}
+
+.tool-approval-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .typing {
   display: flex;
   gap: 4px;
@@ -745,6 +906,17 @@ label {
   }
 }
 
+@keyframes askLook {
+  0%,
+  100% {
+    transform: translateY(2px) scale(0.86);
+  }
+
+  50% {
+    transform: translateY(3px) scale(0.8);
+  }
+}
+
 @keyframes scaleIn {
   from {
     opacity: 0;
@@ -775,6 +947,10 @@ label {
   .chat-wrap {
     border-top: none;
     border-radius: 0 0 40px 40px;
+  }
+
+  .tool-approval-card {
+    margin: 0 14px 10px;
   }
 
   .ear {

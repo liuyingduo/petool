@@ -27,8 +27,24 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 #[cfg(target_os = "windows")]
+fn is_webview_unavailable_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("failed to receive message from webview")
+        || normalized.contains("window has been closed")
+}
+
+#[cfg(target_os = "windows")]
 fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
-    let size = window.inner_size().map_err(|err| err.to_string())?;
+    let size = match window.inner_size() {
+        Ok(size) => size,
+        Err(err) => {
+            let message = err.to_string();
+            if is_webview_unavailable_error(&message) {
+                return Ok(());
+            }
+            return Err(message);
+        }
+    };
     let width = size.width as i32;
     let height = size.height as i32;
 
@@ -88,7 +104,11 @@ fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
         CombineRgn(combined, combined, right_ear, RGN_OR);
     }
 
-    let hwnd = match window.window_handle().map_err(|err| err.to_string())?.as_raw() {
+    let hwnd = match window
+        .window_handle()
+        .map_err(|err| err.to_string())?
+        .as_raw()
+    {
         RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut std::ffi::c_void),
         _ => return Err("unsupported window handle type".to_string()),
     };
@@ -128,13 +148,15 @@ async fn main() {
             app.manage(app_state.clone());
 
             // Create MCP manager
-            let mcp_manager: Arc<tokio::sync::Mutex<McpManager>> = Arc::new(tokio::sync::Mutex::new(McpManager::new()));
+            let mcp_manager: Arc<tokio::sync::Mutex<McpManager>> =
+                Arc::new(tokio::sync::Mutex::new(McpManager::new()));
             app.manage(mcp_manager);
 
             // Create skill manager
             let skill_manager_result = SkillManager::new(skills_dir);
             if let Ok(skill_manager) = skill_manager_result {
-                let skill_manager: Arc<tokio::sync::Mutex<SkillManager>> = Arc::new(tokio::sync::Mutex::new(skill_manager));
+                let skill_manager: Arc<tokio::sync::Mutex<SkillManager>> =
+                    Arc::new(tokio::sync::Mutex::new(skill_manager));
                 app.manage(skill_manager.clone());
 
                 tauri::async_runtime::spawn(async move {
@@ -161,14 +183,18 @@ async fn main() {
             {
                 if let Some(main_window) = app.get_webview_window("main") {
                     if let Err(err) = apply_pet_window_shape(&main_window) {
-                        eprintln!("Failed to apply shaped window region: {}", err);
+                        if !is_webview_unavailable_error(&err) {
+                            eprintln!("Failed to apply shaped window region: {}", err);
+                        }
                     }
 
                     let window_for_events = main_window.clone();
                     main_window.on_window_event(move |event| {
                         if matches!(event, tauri::WindowEvent::Resized(_)) {
                             if let Err(err) = apply_pet_window_shape(&window_for_events) {
-                                eprintln!("Failed to update shaped window region: {}", err);
+                                if !is_webview_unavailable_error(&err) {
+                                    eprintln!("Failed to update shaped window region: {}", err);
+                                }
                             }
                         }
                     });
@@ -185,6 +211,7 @@ async fn main() {
             // Chat commands
             chat::send_message,
             chat::stream_message,
+            chat::resolve_tool_approval,
             chat::get_conversations,
             chat::get_messages,
             chat::create_conversation,

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
 
 pub struct Database {
@@ -48,7 +48,7 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
-            "#
+            "#,
         )
         .execute(&pool)
         .await?;

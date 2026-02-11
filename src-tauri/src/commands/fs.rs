@@ -14,12 +14,9 @@ pub async fn select_folder(window: tauri::Window) -> Result<Option<String>, Stri
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
 
-    window
-        .dialog()
-        .file()
-        .pick_folder(move |folder_path| {
-            let _ = tx.send(folder_path);
-        });
+    window.dialog().file().pick_folder(move |folder_path| {
+        let _ = tx.send(folder_path);
+    });
 
     let folder_path = rx.await.map_err(|e| e.to_string())?;
 
@@ -46,10 +43,11 @@ pub async fn scan_directory(path: String) -> Result<Vec<FileInfo>, String> {
             name: entry.file_name().to_string_lossy().to_string(),
             path: entry.path().to_string_lossy().to_string(),
             is_dir: metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-            size: metadata.as_ref().and_then(|m| {
-                if m.is_file() { Some(m.len()) } else { None }
-            }),
-            extension: entry.path()
+            size: metadata
+                .as_ref()
+                .and_then(|m| if m.is_file() { Some(m.len()) } else { None }),
+            extension: entry
+                .path()
                 .extension()
                 .map(|ext| ext.to_string_lossy().to_string()),
         };
@@ -58,12 +56,10 @@ pub async fn scan_directory(path: String) -> Result<Vec<FileInfo>, String> {
     }
 
     // Sort: directories first, then files, alphabetically
-    files.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.cmp(&b.name),
-        }
+    files.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
     });
 
     Ok(files)

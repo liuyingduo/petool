@@ -1,6 +1,6 @@
 use crate::models::config::McpTransport;
 use crate::models::mcp::*;
-use crate::services::mcp_client::{McpClient, McpManager, StdioTransport, HttpTransport};
+use crate::services::mcp_client::{HttpTransport, McpClient, McpManager, StdioTransport};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -17,16 +17,17 @@ pub async fn connect_server(
         McpTransport::Stdio { command, args } => {
             Box::new(StdioTransport::new(&command, &args).map_err(|e| e.to_string())?)
         }
-        McpTransport::Http { url } => {
-            Box::new(HttpTransport::new(url))
-        }
+        McpTransport::Http { url } => Box::new(HttpTransport::new(url)),
     };
 
-    let client = McpClient::new(name.clone(), transport).await
+    let client = McpClient::new(name.clone(), transport)
+        .await
         .map_err(|e| e.to_string())?;
 
     let mut manager = mcp_manager.lock().await;
-    manager.add_client(name, client).await
+    manager
+        .add_client(name, client)
+        .await
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -60,10 +61,13 @@ pub async fn call_tool(
     arguments: Value,
 ) -> Result<String, String> {
     let mut manager = mcp_manager.lock().await;
-    let client = manager.get_client_mut(&server)
+    let client = manager
+        .get_client_mut(&server)
         .ok_or_else(|| format!("Server '{}' not found", server))?;
 
-    let result = client.call_tool(&name, arguments).await
+    let result = client
+        .call_tool(&name, arguments)
+        .await
         .map_err(|e| e.to_string())?;
 
     serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
@@ -120,9 +124,7 @@ pub async fn list_servers(
 }
 
 #[tauri::command]
-pub async fn disconnect_all_servers(
-    mcp_manager: tauri::State<'_, McpState>,
-) -> Result<(), String> {
+pub async fn disconnect_all_servers(mcp_manager: tauri::State<'_, McpState>) -> Result<(), String> {
     let mut manager = mcp_manager.lock().await;
     manager.shutdown_all().await.map_err(|e| e.to_string())
 }
@@ -134,10 +136,13 @@ pub async fn read_resource(
     uri: String,
 ) -> Result<String, String> {
     let mut manager = mcp_manager.lock().await;
-    let client = manager.get_client_mut(&server)
+    let client = manager
+        .get_client_mut(&server)
         .ok_or_else(|| format!("Server '{}' not found", server))?;
 
-    let result = client.read_resource(&uri).await
+    let result = client
+        .read_resource(&uri)
+        .await
         .map_err(|e| e.to_string())?;
 
     serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
