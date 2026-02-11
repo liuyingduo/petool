@@ -79,7 +79,7 @@ fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
     };
     let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
 
-    if body.0 == 0 || left_ear.0 == 0 || right_ear.0 == 0 || combined.0 == 0 {
+    if body.0.is_null() || left_ear.0.is_null() || right_ear.0.is_null() || combined.0.is_null() {
         return Err("failed to create window region".to_string());
     }
 
@@ -89,21 +89,21 @@ fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
 
     let hwnd = match window.window_handle().map_err(|err| err.to_string())?.as_raw() {
-        RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get()),
+        RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut std::ffi::c_void),
         _ => return Err("unsupported window handle type".to_string()),
     };
 
     let result = unsafe { SetWindowRgn(hwnd, combined, true) };
 
     unsafe {
-        DeleteObject(HGDIOBJ(body.0));
-        DeleteObject(HGDIOBJ(left_ear.0));
-        DeleteObject(HGDIOBJ(right_ear.0));
+        let _ = DeleteObject(HGDIOBJ(body.0));
+        let _ = DeleteObject(HGDIOBJ(left_ear.0));
+        let _ = DeleteObject(HGDIOBJ(right_ear.0));
     }
 
     if result == 0 {
         unsafe {
-            DeleteObject(HGDIOBJ(combined.0));
+            let _ = DeleteObject(HGDIOBJ(combined.0));
         }
         return Err("failed to apply window region".to_string());
     }
