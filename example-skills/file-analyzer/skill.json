@@ -1,0 +1,10 @@
+{
+  "id": "file-analyzer",
+  "name": "File Analyzer",
+  "version": "1.0.0",
+  "description": "Analyzes code files and provides statistics",
+  "author": "PETool",
+  "entry_point": "index.js",
+  "permissions": ["read:file", "read:directory"],
+  "type": "javascript"
+}

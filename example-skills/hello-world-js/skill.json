@@ -1,0 +1,10 @@
+{
+  "id": "hello-world-js",
+  "name": "Hello World (JavaScript)",
+  "version": "1.0.0",
+  "description": "A simple hello world skill in JavaScript",
+  "author": "PETool",
+  "entry_point": "index.js",
+  "permissions": [],
+  "type": "javascript"
+}
