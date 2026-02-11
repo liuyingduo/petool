@@ -815,6 +815,78 @@ label {
   animation-delay: 0.4s;
 }
 
+.upload-strip {
+  margin: 0 24px 10px;
+  border-radius: 16px;
+  border: 1px solid #e7efe8;
+  background: #f8fcf9;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-strip-title {
+  font-size: 12px;
+  color: #587263;
+  font-weight: 700;
+}
+
+.upload-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.upload-chip {
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid #d8e8dd;
+  background: #ffffff;
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 340px;
+}
+
+.upload-chip .material-icons-round {
+  font-size: 16px;
+  color: #4a7c59;
+}
+
+.upload-chip-name {
+  font-size: 12px;
+  color: #334155;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-chip-meta {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.upload-chip-remove {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 999px;
+  background: #eef4ef;
+  color: #64806f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.upload-chip-remove .material-icons-round {
+  font-size: 14px;
+}
+
 .input-bar {
   margin: 0 24px 20px;
   border-radius: 999px;
@@ -951,6 +1023,10 @@ label {
 
   .tool-approval-card {
     margin: 0 14px 10px;
+  }
+
+  .upload-strip {
+    margin: 0 14px 8px;
   }
 
   .ear {

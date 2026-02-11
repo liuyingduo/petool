@@ -74,3 +74,31 @@ pub async fn read_file(path: String) -> Result<String, String> {
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn get_path_info(path: String) -> Result<FileInfo, String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    let metadata = std::fs::metadata(&path_buf).map_err(|e| e.to_string())?;
+    let name = path_buf
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| path_buf.to_string_lossy().to_string());
+
+    Ok(FileInfo {
+        name,
+        path: path_buf.to_string_lossy().to_string(),
+        is_dir: metadata.is_dir(),
+        size: if metadata.is_file() {
+            Some(metadata.len())
+        } else {
+            None
+        },
+        extension: path_buf
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_string()),
+    })
+}

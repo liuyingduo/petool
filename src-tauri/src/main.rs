@@ -221,6 +221,7 @@ async fn main() {
             fs::scan_directory,
             fs::read_file,
             fs::write_file,
+            fs::get_path_info,
             // MCP commands
             mcp::connect_server,
             mcp::disconnect_server,

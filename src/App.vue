@@ -231,8 +231,22 @@
           </div>
         </div>
 
+        <div v-if="pendingUploads.length > 0" class="upload-strip">
+          <div class="upload-strip-title">已添加文件（发送后会一并交给模型）</div>
+          <div class="upload-list">
+            <div v-for="item in pendingUploads" :key="item.id" class="upload-chip">
+              <span class="material-icons-round">{{ item.inlineText ? 'description' : 'insert_drive_file' }}</span>
+              <span class="upload-chip-name">{{ item.name }}</span>
+              <span class="upload-chip-meta">{{ formatBytes(item.size) }}</span>
+              <button class="upload-chip-remove" type="button" @click.stop="removeUpload(item.id)">
+                <span class="material-icons-round">close</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="input-bar" :class="{ disabled: createDialogVisible || !chatStore.currentConversationId }">
-          <button class="attach-btn" @click="handleSelectFolder" :disabled="createDialogVisible">
+          <button class="attach-btn" @click="handleSelectUploadFiles" :disabled="createDialogVisible || chatStore.streaming">
             <span class="material-icons-round">attach_file</span>
           </button>
           <input
@@ -244,7 +258,7 @@
           />
           <button
             class="send-btn"
-            :disabled="createDialogVisible || !chatStore.currentConversationId || chatStore.streaming || !inputMessage.trim()"
+            :disabled="createDialogVisible || !chatStore.currentConversationId || chatStore.streaming || !canSendMessage"
             @click="sendMessage"
           >
             <span class="material-icons-round">arrow_upward</span>
@@ -263,6 +277,7 @@ import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openExternal } from '@tauri-apps/plugin-shell'
 import { useChatStore, type Message } from './stores/chat'
 import { useConfigStore } from './stores/config'
@@ -276,6 +291,40 @@ import {
 } from './composables/useChatEventBridge'
 import { usePetWindowBehavior } from './composables/usePetWindowBehavior'
 
+interface UploadAttachment {
+  id: string
+  path: string
+  name: string
+  extension: string
+  size: number
+  inlineText: string | null
+  inlineTruncated: boolean
+  note: string
+}
+
+interface PathInfo {
+  name: string
+  path: string
+  is_dir: boolean
+  size?: number
+  extension?: string
+}
+
+const MAX_INLINE_FILE_SIZE = 1_500_000
+const MAX_INLINE_TEXT_CHARS = 80_000
+const MAX_TOTAL_INLINE_CHARS = 140_000
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini', 'csv', 'tsv',
+  'xml', 'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'vue',
+  'py', 'java', 'go', 'rs', 'cpp', 'c', 'h', 'hpp', 'sh', 'ps1', 'bat', 'sql', 'log'
+])
+
+const BINARY_FILE_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'xlsm', 'zip', 'rar', '7z',
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'mp3', 'wav', 'mp4', 'mov'
+])
+
 const chatStore = useChatStore()
 const configStore = useConfigStore()
 const fsStore = useFilesystemStore()
@@ -284,6 +333,7 @@ const inputMessage = ref('')
 const newConversationTitle = ref('')
 const showSettings = ref(false)
 const createDialogVisible = ref(false)
+const pendingUploads = ref<UploadAttachment[]>([])
 const workspaceRef = ref<HTMLElement | null>(null)
 const activeAssistantMessageId = ref<string | null>(null)
 const reasoningByMessage = ref<Record<string, ReasoningEntry>>({})
@@ -300,6 +350,10 @@ const recentFolders = computed(() => {
   const paths = [fsStore.currentDirectory, configStore.config.work_directory]
     .filter((path): path is string => Boolean(path && path.trim()))
   return Array.from(new Set(paths)).slice(0, 3)
+})
+
+const canSendMessage = computed(() => {
+  return inputMessage.value.trim().length > 0 || pendingUploads.value.length > 0
 })
 
 const activeToolApproval = computed(() => {
@@ -544,6 +598,33 @@ async function handleSelectFolder() {
   }
 }
 
+async function handleSelectUploadFiles() {
+  try {
+    const selected = await openDialog({
+      title: '选择要分析的文件',
+      multiple: true,
+      directory: false
+    })
+
+    if (!selected) return
+
+    const paths = Array.isArray(selected) ? selected : [selected]
+    const uniquePaths = paths.filter((path, index) => path && paths.indexOf(path) === index)
+
+    for (const path of uniquePaths) {
+      if (pendingUploads.value.some((item) => item.path === path)) continue
+      const attachment = await buildUploadAttachment(path)
+      pendingUploads.value.push(attachment)
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, '选择文件失败'))
+  }
+}
+
+function removeUpload(uploadId: string) {
+  pendingUploads.value = pendingUploads.value.filter((item) => item.id !== uploadId)
+}
+
 async function handleSelectConversation(id: string) {
   chatStore.setCurrentConversation(id)
   await chatStore.loadMessages(id)
@@ -590,10 +671,16 @@ async function handleCreateConversation() {
 
 async function sendMessage() {
   const content = inputMessage.value.trim()
-  if (!content || !chatStore.currentConversationId || chatStore.streaming) return
+  const uploads = [...pendingUploads.value]
+  if ((!content && uploads.length === 0) || !chatStore.currentConversationId || chatStore.streaming) return
 
   const conversationId = chatStore.currentConversationId
+  const messageContentForModel = buildMessageForModel(content, uploads)
+  const messageContentForView = buildMessageForDisplay(content, uploads)
+  const workspaceDirectory = resolveWorkspaceDirectoryForSend(uploads)
+
   inputMessage.value = ''
+  pendingUploads.value = []
   toolStreamItems.value = []
   pendingToolApproval.value = null
 
@@ -601,7 +688,7 @@ async function sendMessage() {
     id: Date.now().toString(),
     conversation_id: conversationId,
     role: 'user',
-    content,
+    content: messageContentForView,
     created_at: new Date().toISOString()
   }
   chatStore.addMessage(conversationId, userMsg)
@@ -621,8 +708,8 @@ async function sendMessage() {
   try {
     await invoke('stream_message', {
       conversationId,
-      content,
-      workspaceDirectory: fsStore.currentDirectory || configStore.config.work_directory || null
+      content: messageContentForModel,
+      workspaceDirectory
     })
   } catch (error) {
     chatStore.streaming = false
@@ -631,6 +718,8 @@ async function sendMessage() {
     toolStreamItems.value = []
     pendingToolApproval.value = null
     resolvingToolApproval.value = false
+    inputMessage.value = content
+    pendingUploads.value = uploads
     ElMessage.error(getErrorMessage(error, '发送消息失败'))
   }
 }
@@ -682,6 +771,162 @@ function getErrorMessage(error: unknown, fallback: string) {
   if (typeof error === 'string' && error.trim().length > 0) return error
   if (error instanceof Error && error.message.trim().length > 0) return error.message
   return fallback
+}
+
+async function buildUploadAttachment(path: string): Promise<UploadAttachment> {
+  const pathInfo = await invoke<PathInfo>('get_path_info', { path })
+  if (pathInfo.is_dir) {
+    throw new Error(`不是文件: ${path}`)
+  }
+
+  const extension = (pathInfo.extension || getPathExtension(path)).toLowerCase()
+  const size = typeof pathInfo.size === 'number' && Number.isFinite(pathInfo.size) ? pathInfo.size : 0
+  const isLikelyBinary = BINARY_FILE_EXTENSIONS.has(extension)
+  const isLikelyText = TEXT_FILE_EXTENSIONS.has(extension)
+  const attachment: UploadAttachment = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    path,
+    name: getPathName(path) || path,
+    extension,
+    size,
+    inlineText: null,
+    inlineTruncated: false,
+    note: ''
+  }
+
+  if (isLikelyBinary) {
+    attachment.note = '该文件为二进制格式，将以文件路径方式交给模型分析。'
+    return attachment
+  }
+
+  if (size > MAX_INLINE_FILE_SIZE) {
+    attachment.note = '文件较大，已仅上传文件路径与元信息。'
+    return attachment
+  }
+
+  if (!isLikelyText && extension) {
+    attachment.note = '该类型默认按路径交给模型分析。'
+    return attachment
+  }
+
+  try {
+    const rawText = await invoke<string>('read_file', { path })
+    if (!rawText.trim()) {
+      attachment.note = '文件内容为空，将只提供文件路径。'
+      return attachment
+    }
+
+    if (rawText.length > MAX_INLINE_TEXT_CHARS) {
+      attachment.inlineText = rawText.slice(0, MAX_INLINE_TEXT_CHARS)
+      attachment.inlineTruncated = true
+      attachment.note = '文件内容过长，已截断后上传。'
+    } else {
+      attachment.inlineText = rawText
+      attachment.note = '文件内容已上传给模型。'
+    }
+  } catch {
+    attachment.note = '读取文本失败，将以文件路径方式交给模型分析。'
+  }
+
+  return attachment
+}
+
+function buildMessageForDisplay(content: string, uploads: UploadAttachment[]) {
+  const trimmed = content.trim()
+  if (uploads.length === 0) return trimmed
+
+  const fileLines = uploads.map((item) => `- ${item.name}`)
+  const filesBlock = `\n\n[已上传文件]\n${fileLines.join('\n')}`
+  return `${trimmed || '请分析我上传的文件。'}${filesBlock}`
+}
+
+function buildMessageForModel(content: string, uploads: UploadAttachment[]) {
+  if (uploads.length === 0) return content.trim()
+
+  let remainingInlineBudget = MAX_TOTAL_INLINE_CHARS
+  const lines: string[] = []
+  lines.push('【用户上传文件】')
+
+  for (let i = 0; i < uploads.length; i += 1) {
+    const item = uploads[i]
+    lines.push(`${i + 1}. 文件名: ${item.name}`)
+    lines.push(`   路径: ${item.path}`)
+    lines.push(`   大小: ${formatBytes(item.size)}`)
+    lines.push(`   说明: ${item.note}`)
+
+    if (item.inlineText && remainingInlineBudget > 0) {
+      const textToInclude =
+        item.inlineText.length > remainingInlineBudget
+          ? item.inlineText.slice(0, remainingInlineBudget)
+          : item.inlineText
+      remainingInlineBudget -= textToInclude.length
+      lines.push('   内容片段:')
+      lines.push('```text')
+      lines.push(textToInclude)
+      lines.push('```')
+      if (item.inlineTruncated || textToInclude.length < item.inlineText.length) {
+        lines.push('   注: 内容已截断。')
+      }
+    } else {
+      lines.push('   内容片段: 未内联，请通过文件路径读取。')
+    }
+  }
+
+  lines.push('请优先基于上述附件内容完成分析；若内容未内联，请通过可用工具读取该路径文件。')
+
+  const userText = content.trim() || '请分析这些文件，并给出清晰结论。'
+  return `${userText}\n\n${lines.join('\n')}`
+}
+
+function resolveWorkspaceDirectoryForSend(uploads: UploadAttachment[]) {
+  const configuredWorkspace = fsStore.currentDirectory || configStore.config.work_directory || null
+  if (uploads.length === 0) return configuredWorkspace
+
+  const firstParent = getParentPath(uploads[0].path)
+  if (!firstParent) return configuredWorkspace
+  if (!configuredWorkspace) return firstParent
+
+  return isPathInside(configuredWorkspace, uploads[0].path) ? configuredWorkspace : firstParent
+}
+
+function isPathInside(basePath: string, targetPath: string) {
+  const base = normalizePathForCompare(basePath)
+  const target = normalizePathForCompare(targetPath)
+  return target === base || target.startsWith(`${base}/`)
+}
+
+function normalizePathForCompare(value: string) {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+function getParentPath(input: string) {
+  const value = input.trim().replace(/[\\/]+$/, '')
+  if (!value) return ''
+  const parts = value.split(/[\\/]+/)
+  if (parts.length <= 1) return ''
+  const sep = value.includes('\\') ? '\\' : '/'
+  const parent = parts.slice(0, parts.length - 1).join(sep)
+  if (/^[a-zA-Z]:$/.test(parent)) return `${parent}\\`
+  return parent
+}
+
+function getPathExtension(input: string) {
+  const name = getPathName(input).toLowerCase()
+  const dot = name.lastIndexOf('.')
+  if (dot < 0 || dot === name.length - 1) return ''
+  return name.slice(dot + 1)
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }
 
 function normalizeToolName(name: string) {
