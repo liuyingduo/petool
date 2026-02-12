@@ -630,7 +630,7 @@ label {
 .reasoning {
   border: 1px dashed #d6d3d1;
   border-radius: 10px;
-  margin-bottom: 8px;
+  margin-top: 8px;
   background: #fafaf9;
 }
 
@@ -754,6 +754,20 @@ label {
   font-weight: 700;
   color: #64748b;
   background: #f1f5f9;
+}
+
+.tool-text .tool-code {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #334155;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-x: auto;
 }
 
 .tool-compact {

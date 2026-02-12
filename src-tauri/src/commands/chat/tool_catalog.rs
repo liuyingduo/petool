@@ -45,7 +45,9 @@ pub(super) fn collect_workspace_tools(
         &mut tool_map,
         WORKSPACE_LIST_TOOL,
         format!(
-            "List files and subdirectories in the local workspace. Workspace root: {}",
+            "List direct children of a directory in the local workspace (non-recursive peek). \
+             Avoid using this for recursive traversal, file counting, folder-size calculation, or large inventory tasks. \
+             On Windows, prefer workspace_run_command with PowerShell for those operations. Workspace root: {}",
             root_hint
         ),
         json!({
@@ -231,7 +233,9 @@ pub(super) fn collect_workspace_tools(
         &mut tool_map,
         WORKSPACE_RUN_TOOL,
         format!(
-            "Run a shell command in the local workspace and return stdout/stderr. Workspace root: {}",
+            "Run a shell command in the local workspace and return stdout/stderr. \
+             On Windows this executes in PowerShell (-NoProfile -Command). \
+             Prefer this tool for recursive file traversal, file statistics, folder size, bulk listing/sorting/filtering, and other batch filesystem tasks. Workspace root: {}",
             root_hint
         ),
         json!({

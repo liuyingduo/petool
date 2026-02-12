@@ -7,6 +7,7 @@ export interface Message {
   conversation_id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  reasoning?: string | null
   created_at: string
   tool_calls?: any[]
 }

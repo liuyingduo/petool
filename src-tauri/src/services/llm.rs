@@ -98,6 +98,7 @@ pub enum LlmStreamEvent {
 #[derive(Debug, Clone)]
 pub struct LlmStreamResult {
     pub content: String,
+    pub reasoning: String,
     pub tool_calls: Vec<ChatToolCall>,
 }
 
@@ -106,6 +107,37 @@ struct ToolCallBuilder {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+fn append_with_overlap(base: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    if base.is_empty() {
+        base.push_str(chunk);
+        return;
+    }
+    if base.contains(chunk) {
+        return;
+    }
+    if chunk.starts_with(base.as_str()) {
+        *base = chunk.to_string();
+        return;
+    }
+
+    let base_chars: Vec<char> = base.chars().collect();
+    let chunk_chars: Vec<char> = chunk.chars().collect();
+    let max = base_chars.len().min(chunk_chars.len());
+    for len in (6..=max).rev() {
+        let base_suffix: String = base_chars[base_chars.len() - len..].iter().collect();
+        let chunk_prefix: String = chunk_chars[..len].iter().collect();
+        if base_suffix == chunk_prefix {
+            let chunk_rest: String = chunk_chars[len..].iter().collect();
+            base.push_str(&chunk_rest);
+            return;
+        }
+    }
+    base.push_str(chunk);
 }
 
 pub struct LlmService {
@@ -193,6 +225,7 @@ impl LlmService {
 
         let mut buffer = String::new();
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
 
         while let Some(item) = stream.next().await {
@@ -231,6 +264,7 @@ impl LlmService {
                     .pointer("/choices/0/delta/reasoning_content")
                     .and_then(|v| v.as_str())
                 {
+                    append_with_overlap(&mut reasoning, reasoning_text);
                     callback(LlmStreamEvent::Reasoning(reasoning_text.to_string()));
                 }
 
@@ -299,6 +333,7 @@ impl LlmService {
 
         Ok(LlmStreamResult {
             content,
+            reasoning,
             tool_calls,
         })
     }

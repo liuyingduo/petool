@@ -16,6 +16,7 @@ pub struct Message {
     pub conversation_id: String,
     pub role: MessageRole,
     pub content: String,
+    pub reasoning: Option<String>,
     pub created_at: DateTime<Utc>,
     pub tool_calls: Option<Vec<ToolCall>>,
 }

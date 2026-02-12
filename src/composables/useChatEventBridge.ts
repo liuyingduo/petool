@@ -12,6 +12,7 @@ export interface ToolStreamItem {
   arguments: string
   result: string
   status: 'running' | 'done' | 'error'
+  index?: number
 }
 
 export interface ToolApprovalRequest {
@@ -39,6 +40,84 @@ interface ChatEventBridgeOptions {
 
 export async function registerChatEventListeners(options: ChatEventBridgeOptions) {
   const unlistenFns: Array<() => void> = []
+  let anonymousToolCounter = 0
+
+  function appendWithOverlap(base: string, chunk: string) {
+    if (!base) return chunk
+    if (!chunk) return base
+    if (base.includes(chunk)) return base
+    if (chunk.startsWith(base)) return chunk
+
+    const max = Math.min(base.length, chunk.length)
+    for (let len = max; len >= 6; len -= 1) {
+      if (base.slice(base.length - len) === chunk.slice(0, len)) {
+        return base + chunk.slice(len)
+      }
+    }
+    return base + chunk
+  }
+
+  function provisionalToolId(index?: number) {
+    anonymousToolCounter += 1
+    if (typeof index === 'number' && Number.isFinite(index)) {
+      return `tool-${index}-${anonymousToolCounter}`
+    }
+    return `tool-anon-${anonymousToolCounter}`
+  }
+
+  function findToolItem(
+    id?: string,
+    index?: number,
+    name?: string,
+    preferRunning = false
+  ) {
+    const items = options.toolStreamItems.value
+    if (id) {
+      const byId = items.find((entry) => entry.id === id)
+      if (byId) return byId
+    }
+
+    if (typeof index === 'number' && Number.isFinite(index)) {
+      const byIndex = items.find(
+        (entry) => entry.index === index && (!preferRunning || entry.status === 'running')
+      )
+      if (byIndex) return byIndex
+    }
+
+    if (name) {
+      const byName = items.find((entry) => entry.name === name && (!preferRunning || entry.status === 'running'))
+      if (byName) return byName
+    }
+
+    if (preferRunning) {
+      return items.find((entry) => entry.status === 'running')
+    }
+
+    return undefined
+  }
+
+  function mergeToolItem(target: ToolStreamItem, source: ToolStreamItem) {
+    if (!target.arguments && source.arguments) {
+      target.arguments = source.arguments
+    }
+    if (!target.result && source.result) {
+      target.result = source.result
+    }
+    if (target.status === 'running' && source.status !== 'running') {
+      target.status = source.status
+    }
+    if (typeof target.index !== 'number' && typeof source.index === 'number') {
+      target.index = source.index
+    }
+  }
+
+  function normalizeToolOrder() {
+    options.toolStreamItems.value.sort((a, b) => {
+      const left = typeof a.index === 'number' ? a.index : Number.MAX_SAFE_INTEGER
+      const right = typeof b.index === 'number' ? b.index : Number.MAX_SAFE_INTEGER
+      return left - right
+    })
+  }
 
   unlistenFns.push(
     await listen('chat-chunk', (event) => {
@@ -53,7 +132,6 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
       options.chatStore.streaming = false
       options.onStreamEnd()
       options.activeAssistantMessageId.value = null
-      options.toolStreamItems.value = []
     })
   )
 
@@ -66,7 +144,10 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
       if (!options.reasoningByMessage.value[id]) {
         options.reasoningByMessage.value[id] = { text: '', collapsed: false }
       }
-      options.reasoningByMessage.value[id].text += chunk
+      options.reasoningByMessage.value[id].text = appendWithOverlap(
+        options.reasoningByMessage.value[id].text,
+        chunk
+      )
       options.reasoningByMessage.value[id].collapsed = false
     })
   )
@@ -74,33 +155,67 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
   unlistenFns.push(
     await listen('chat-tool-call', (event) => {
       const payload = event.payload as { index?: number; toolCallId?: string; name?: string; argumentsChunk?: string }
-      const id = payload.toolCallId || `tool-${payload.index ?? 0}`
-      let item = options.toolStreamItems.value.find((entry) => entry.id === id)
+      const id = payload.toolCallId || provisionalToolId(payload.index)
+      let item = payload.toolCallId
+        ? findToolItem(payload.toolCallId, payload.index, payload.name)
+        : findToolItem(undefined, payload.index, payload.name, true)
 
       if (!item) {
-        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running' }
+        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running', index: payload.index }
         options.toolStreamItems.value.push(item)
+      } else if (!payload.toolCallId && item.status !== 'running') {
+        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running', index: payload.index }
+        options.toolStreamItems.value.push(item)
+      } else if (payload.toolCallId && item.id !== payload.toolCallId) {
+        const duplicate = options.toolStreamItems.value.find((entry) => entry.id === payload.toolCallId)
+        if (duplicate && duplicate !== item) {
+          mergeToolItem(duplicate, item)
+          const removeIndex = options.toolStreamItems.value.indexOf(item)
+          if (removeIndex >= 0) {
+            options.toolStreamItems.value.splice(removeIndex, 1)
+          }
+          item = duplicate
+        } else {
+          item.id = payload.toolCallId
+        }
       }
 
       if (payload.name) item.name = payload.name
+      if (typeof payload.index === 'number' && Number.isFinite(payload.index)) {
+        item.index = payload.index
+      }
       if (payload.argumentsChunk) item.arguments += payload.argumentsChunk
+      normalizeToolOrder()
     })
   )
 
   unlistenFns.push(
     await listen('chat-tool-result', (event) => {
       const payload = event.payload as { toolCallId?: string; name?: string; result?: string | null; error?: string | null }
-      const id = payload.toolCallId || `tool-${Date.now()}`
-      let item = options.toolStreamItems.value.find((entry) => entry.id === id)
+      const id = payload.toolCallId || provisionalToolId(undefined)
+      let item = findToolItem(payload.toolCallId, undefined, payload.name, true)
 
       if (!item) {
         item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running' }
         options.toolStreamItems.value.push(item)
+      } else if (payload.toolCallId && item.id !== payload.toolCallId) {
+        const duplicate = options.toolStreamItems.value.find((entry) => entry.id === payload.toolCallId)
+        if (duplicate && duplicate !== item) {
+          mergeToolItem(duplicate, item)
+          const removeIndex = options.toolStreamItems.value.indexOf(item)
+          if (removeIndex >= 0) {
+            options.toolStreamItems.value.splice(removeIndex, 1)
+          }
+          item = duplicate
+        } else {
+          item.id = payload.toolCallId
+        }
       }
 
       if (payload.name) item.name = payload.name
       item.status = payload.error ? 'error' : 'done'
       item.result = payload.error || payload.result || ''
+      normalizeToolOrder()
     })
   )
 

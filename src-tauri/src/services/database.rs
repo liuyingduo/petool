@@ -36,6 +36,7 @@ impl Database {
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 tool_calls TEXT,
+                reasoning TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
 
@@ -52,6 +53,19 @@ impl Database {
         )
         .execute(&pool)
         .await?;
+
+        let has_reasoning_column = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
+        )
+        .fetch_one(&pool)
+        .await?
+            > 0;
+
+        if !has_reasoning_column {
+            sqlx::query("ALTER TABLE messages ADD COLUMN reasoning TEXT")
+                .execute(&pool)
+                .await?;
+        }
 
         Ok(Self { pool })
     }

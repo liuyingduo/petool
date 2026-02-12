@@ -196,12 +196,13 @@ async fn insert_message(
     role: &str,
     content: &str,
     tool_calls: Option<String>,
+    reasoning: Option<String>,
 ) -> Result<(), String> {
     let message_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO messages (id, conversation_id, role, content, created_at, tool_calls) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, tool_calls, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&message_id)
     .bind(conversation_id)
@@ -209,6 +210,7 @@ async fn insert_message(
     .bind(content)
     .bind(&now)
     .bind(tool_calls)
+    .bind(reasoning)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -315,6 +317,30 @@ fn prepend_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<
         ChatMessage {
             role: "system".to_string(),
             content: Some(trimmed.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    );
+}
+
+fn prepend_tool_usage_guidance(messages: &mut Vec<ChatMessage>) {
+    let guidance = if cfg!(target_os = "windows") {
+        "Tool selection policy (Windows): \
+Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
+Use concise PowerShell commands for these operations (for example: Get-ChildItem -Recurse -File | Measure-Object, or Get-ChildItem -Recurse | Measure-Object -Property Length -Sum). \
+Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually."
+    } else {
+        "Tool selection policy: \
+Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
+Use shell pipelines for these operations. \
+Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually."
+    };
+
+    messages.insert(
+        0,
+        ChatMessage {
+            role: "system".to_string(),
+            content: Some(guidance.to_string()),
             tool_calls: None,
             tool_call_id: None,
         },
@@ -430,7 +456,7 @@ async fn persist_tool_result_message(
     result_text: String,
 ) -> Result<(), String> {
     let metadata = build_tool_call_metadata(tool_call)?;
-    insert_message(pool, conversation_id, "tool", &result_text, Some(metadata)).await?;
+    insert_message(pool, conversation_id, "tool", &result_text, Some(metadata), None).await?;
 
     context_messages.push(ChatMessage {
         role: "tool".to_string(),
@@ -1971,7 +1997,7 @@ async fn execute_sessions_send(
         .or(conversation_model)
         .unwrap_or_else(|| default_model.to_string());
 
-    insert_message(pool, &conversation_id, "user", &content, None).await?;
+    insert_message(pool, &conversation_id, "user", &content, None, None).await?;
 
     let assistant_response = if run_assistant {
         let messages = load_conversation_context(pool, &conversation_id).await?;
@@ -1979,7 +2005,7 @@ async fn execute_sessions_send(
             .chat(&selected_model, messages)
             .await
             .map_err(|e| e.to_string())?;
-        insert_message(pool, &conversation_id, "assistant", &response, None).await?;
+        insert_message(pool, &conversation_id, "assistant", &response, None, None).await?;
         Some(response)
     } else {
         None
@@ -2020,7 +2046,7 @@ async fn execute_sessions_spawn(
     .map_err(|e| e.to_string())?;
 
     if let Some(user_text) = content.clone() {
-        insert_message(pool, &id, "user", &user_text, None).await?;
+        insert_message(pool, &id, "user", &user_text, None, None).await?;
     }
 
     let assistant_response = if run_assistant {
@@ -2032,7 +2058,7 @@ async fn execute_sessions_spawn(
             .chat(&model, messages)
             .await
             .map_err(|e| e.to_string())?;
-        insert_message(pool, &id, "assistant", &response, None).await?;
+        insert_message(pool, &id, "assistant", &response, None, None).await?;
         Some(response)
     } else {
         None
@@ -2394,7 +2420,7 @@ pub async fn send_message(
     };
     let model_to_use = resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
 
-    insert_message(&pool, &conversation_id, "user", &content, None).await?;
+    insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
 
     let mut messages = load_conversation_context(&pool, &conversation_id).await?;
     prepend_system_prompt(&mut messages, config.system_prompt.as_deref());
@@ -2404,7 +2430,7 @@ pub async fn send_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    insert_message(&pool, &conversation_id, "assistant", &response, None).await?;
+    insert_message(&pool, &conversation_id, "assistant", &response, None, None).await?;
 
     Ok(response)
 }
@@ -2439,10 +2465,11 @@ pub async fn stream_message(
     };
     let model_to_use = resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
 
-    insert_message(&pool, &conversation_id, "user", &content, None).await?;
+    insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
 
     let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
     prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
+    prepend_tool_usage_guidance(&mut context_messages);
 
     let mut always_allowed_tools = HashSet::<String>::new();
     let mut last_tool_signature: Option<String> = None;
@@ -2458,6 +2485,11 @@ pub async fn stream_message(
         .await?;
 
         let assistant_content = stream_result.content.clone();
+        let assistant_reasoning = if stream_result.reasoning.trim().is_empty() {
+            None
+        } else {
+            Some(stream_result.reasoning.clone())
+        };
 
         if stream_result.tool_calls.is_empty() {
             insert_message(
@@ -2466,6 +2498,7 @@ pub async fn stream_message(
                 "assistant",
                 &assistant_content,
                 None,
+                assistant_reasoning.clone(),
             )
             .await?;
             window.emit("chat-end", &()).map_err(|e| e.to_string())?;
@@ -2480,6 +2513,7 @@ pub async fn stream_message(
             "assistant",
             &assistant_content,
             Some(assistant_tool_calls_json.clone()),
+            assistant_reasoning,
         )
         .await?;
 
@@ -2505,7 +2539,7 @@ pub async fn stream_message(
             window
                 .emit("chat-chunk", guard_text)
                 .map_err(|e| e.to_string())?;
-            insert_message(&pool, &conversation_id, "assistant", guard_text, None).await?;
+            insert_message(&pool, &conversation_id, "assistant", guard_text, None, None).await?;
             window.emit("chat-end", &()).map_err(|e| e.to_string())?;
             return Ok(());
         }
@@ -2629,8 +2663,19 @@ pub async fn get_messages(
         guard.db().pool().clone()
     };
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
-        "SELECT id, conversation_id, role, content, created_at, tool_calls FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, conversation_id, role, content, created_at, tool_calls, reasoning FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
     )
     .bind(&conversation_id)
     .fetch_all(&pool)
@@ -2640,7 +2685,15 @@ pub async fn get_messages(
     let messages = rows
         .into_iter()
         .map(
-            |(id, conversation_id, role_raw, content, created_at_raw, tool_calls_raw)| {
+            |(
+                id,
+                conversation_id,
+                role_raw,
+                content,
+                created_at_raw,
+                tool_calls_raw,
+                reasoning_raw,
+            )| {
                 let role = match role_raw.as_str() {
                     "user" => MessageRole::User,
                     "assistant" => MessageRole::Assistant,
@@ -2649,38 +2702,63 @@ pub async fn get_messages(
                     _ => MessageRole::User,
                 };
 
-                let tool_calls: Option<Vec<ToolCall>> =
-                    tool_calls_raw.as_deref().and_then(|value| {
-                        serde_json::from_str::<Vec<ToolCall>>(value)
-                            .ok()
-                            .or_else(|| {
-                                serde_json::from_str::<Vec<ChatToolCall>>(value)
-                                    .ok()
-                                    .map(|calls| {
-                                        calls
-                                            .into_iter()
-                                            .map(|call| ToolCall {
-                                                id: call.id,
-                                                tool_name: call.function.name,
-                                                arguments: serde_json::from_str(
-                                                    &call.function.arguments,
-                                                )
-                                                .unwrap_or_else(|_| {
-                                                    json!({
-                                                        "raw_arguments": call.function.arguments
-                                                    })
-                                                }),
-                                            })
-                                            .collect()
-                                    })
+                let tool_calls: Option<Vec<ToolCall>> = tool_calls_raw.as_deref().and_then(|value| {
+                    serde_json::from_str::<Vec<ToolCall>>(value)
+                        .ok()
+                        .or_else(|| {
+                            serde_json::from_str::<Vec<ChatToolCall>>(value)
+                                .ok()
+                                .map(|calls| {
+                                    calls
+                                        .into_iter()
+                                        .map(|call| ToolCall {
+                                            id: call.id,
+                                            tool_name: call.function.name,
+                                            arguments: serde_json::from_str(
+                                                &call.function.arguments,
+                                            )
+                                            .unwrap_or_else(|_| {
+                                                json!({
+                                                    "raw_arguments": call.function.arguments
+                                                })
+                                            }),
+                                        })
+                                        .collect()
+                                })
+                        })
+                        .or_else(|| {
+                            serde_json::from_str::<Value>(value).ok().and_then(|meta| {
+                                let tool_call_id = meta
+                                    .get("tool_call_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)?;
+                                let tool_name = meta
+                                    .get("tool_name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("tool")
+                                    .to_string();
+                                Some(vec![ToolCall {
+                                    id: tool_call_id,
+                                    tool_name,
+                                    arguments: json!({}),
+                                }])
                             })
-                    });
+                        })
+                });
 
                 Message {
                     id,
                     conversation_id,
                     role,
                     content,
+                    reasoning: reasoning_raw.and_then(|value| {
+                        let trimmed = value.trim().to_string();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    }),
                     created_at: created_at_raw.parse().unwrap_or_else(|_| Utc::now()),
                     tool_calls,
                 }

@@ -141,7 +141,13 @@
             <button class="start-btn" @click="handleCreateConversation">开始</button>
           </div>
 
-          <div v-else class="message-list no-scrollbar" @click="handleMarkdownLinkClick">
+          <div
+            v-else
+            ref="messageListRef"
+            class="message-list no-scrollbar"
+            @click="handleMarkdownLinkClick"
+            @scroll.passive="handleMessageListScroll"
+          >
             <div
               v-for="message in chatStore.currentMessages"
               :key="message.id"
@@ -160,63 +166,71 @@
                 </div>
               </div>
 
-              <div
-                v-if="message.role === 'assistant' && getReasoningEntry(message.id)?.text"
-                class="reasoning"
-              >
-                <button class="reasoning-toggle" @click="toggleReasoning(message.id)">
-                  <span>思考过程</span>
-                  <span class="reasoning-state">{{ isStreamingMessage(message.id) ? '思考中...' : '已折叠' }}</span>
-                  <span class="material-icons-round">{{ getReasoningEntry(message.id)?.collapsed ? 'expand_more' : 'expand_less' }}</span>
-                </button>
-                <div v-show="!getReasoningEntry(message.id)?.collapsed" class="reasoning-content">
-                  {{ getReasoningEntry(message.id)?.text }}
-                </div>
-              </div>
-
               <div v-if="shouldShowMessageBubble(message)" class="bubble">
-                <div v-if="message.content.trim()" v-html="renderMarkdown(message.content)"></div>
-
                 <div
-                  v-if="message.role === 'assistant' && isStreamingMessage(message.id) && toolStreamItems.length > 0"
+                  v-if="shouldShowToolProgress(message)"
                   class="tool-progress"
                 >
                   <div v-if="isToolDisplayFull" class="tool-list">
-                    <div v-for="item in toolStreamItems" :key="item.id" class="tool-item" :class="item.status">
-                      <div class="tool-title">{{ renderToolStepName(item.name) }}</div>
+                    <div
+                      v-for="item in getToolItemsForMessage(message.id)"
+                      :key="`${message.id}-${item.id}`"
+                      class="tool-item"
+                      :class="item.status"
+                    >
+                      <div class="tool-title">{{ renderToolItemName(item) }}</div>
                       <div v-if="item.arguments" class="tool-text">
                         <span class="tool-text-label">参数</span>
-                        {{ item.arguments }}
+                        <pre class="tool-code">{{ renderToolArguments(item) }}</pre>
                       </div>
                       <div v-if="item.result" class="tool-text">
                         <span class="tool-text-label">结果</span>
-                        {{ item.result }}
+                        <pre class="tool-code">{{ renderToolResult(item) }}</pre>
                       </div>
                     </div>
                   </div>
 
                   <div v-else class="tool-compact">
-                    <button class="tool-compact-head" type="button" @click="toggleCompactToolList">
-                      <span class="tool-compact-title">{{ compactToolSummaryTitle }}</span>
-                      <span class="tool-compact-count">{{ compactToolSummaryCount }}</span>
+                    <button class="tool-compact-head" type="button" @click="toggleCompactToolList(message.id)">
+                      <span class="tool-compact-title">{{ getCompactToolSummaryTitle(message.id) }}</span>
+                      <span class="tool-compact-count">{{ getCompactToolSummaryCount(message.id) }}</span>
                       <span class="material-icons-round">
-                        {{ compactToolListCollapsed ? 'expand_more' : 'expand_less' }}
+                        {{ isToolListCollapsed(message.id) ? 'expand_more' : 'expand_less' }}
                       </span>
                     </button>
-                    <div v-show="!compactToolListCollapsed" class="tool-compact-list">
+                    <div v-show="!isToolListCollapsed(message.id)" class="tool-compact-list">
                       <div
-                        v-for="item in toolStreamItems"
-                        :key="`compact-${item.id}`"
+                        v-for="item in getToolItemsForMessage(message.id)"
+                        :key="`compact-${message.id}-${item.id}`"
                         class="tool-compact-item"
                         :class="item.status"
                       >
                         <span class="tool-compact-dot" aria-hidden="true"></span>
-                        <span class="tool-compact-name">{{ renderToolStepName(item.name) }}</span>
+                        <span class="tool-compact-name">{{ renderToolItemName(item) }}</span>
                         <span class="tool-compact-status">{{ getToolStatusLabel(item.status) }}</span>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                <div
+                  v-if="message.role === 'assistant' && getReasoningEntry(message.id)?.text"
+                  class="reasoning"
+                >
+                  <button class="reasoning-toggle" @click="toggleReasoning(message.id)">
+                    <span>思考过程</span>
+                    <span class="reasoning-state">{{ isStreamingMessage(message.id) ? '思考中...' : '已折叠' }}</span>
+                    <span class="material-icons-round">{{ getReasoningEntry(message.id)?.collapsed ? 'expand_more' : 'expand_less' }}</span>
+                  </button>
+                  <div v-show="!getReasoningEntry(message.id)?.collapsed" class="reasoning-content">
+                    {{ getReasoningEntry(message.id)?.text }}
+                  </div>
+                </div>
+
+                <div
+                  v-if="shouldRenderAssistantContent(message)"
+                  v-html="renderMarkdown(getDisplayedMessageContent(message))"
+                ></div>
 
                 <div v-if="message.role === 'assistant' && isStreamingMessage(message.id)" class="typing">
                   <span></span><span></span><span></span>
@@ -348,7 +362,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import { ElMessage } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
@@ -361,11 +375,11 @@ import { useFilesystemStore } from './stores/filesystem'
 import SettingsDialog from './components/Settings/index.vue'
 import {
   registerChatEventListeners,
-  type ReasoningEntry,
-  type ToolApprovalRequest,
-  type ToolStreamItem
+  type ToolApprovalRequest
 } from './composables/useChatEventBridge'
+import { useChatMessageArtifacts } from './composables/useChatMessageArtifacts'
 import { usePetWindowBehavior } from './composables/usePetWindowBehavior'
+import { normalizeToolName, renderToolLabel, truncateMiddle } from './utils/toolDisplay'
 
 interface UploadAttachment {
   id: string
@@ -413,14 +427,14 @@ const createDialogVisible = ref(false)
 const createConversationWorkspaceDirectory = ref<string | null>(null)
 const pendingUploads = ref<UploadAttachment[]>([])
 const workspaceRef = ref<HTMLElement | null>(null)
+const messageListRef = ref<HTMLElement | null>(null)
 const activeAssistantMessageId = ref<string | null>(null)
-const reasoningByMessage = ref<Record<string, ReasoningEntry>>({})
-const toolStreamItems = ref<ToolStreamItem[]>([])
-const compactToolListCollapsed = ref(false)
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
 const resolvingToolApproval = ref(false)
 const isWindowMaximized = ref(false)
 const unlistenFns: Array<() => void> = []
+const AUTO_SCROLL_BOTTOM_THRESHOLD = 72
+let messageListScrollFrame: number | null = null
 const appWindow = getCurrentWindow()
 const {
   handleManualDrag: handleManualDragInternal,
@@ -445,6 +459,37 @@ const TOOL_STEP_LABELS: Record<string, string> = {
   skills_plan: '规划步骤',
   skills_execute: '执行技能'
 }
+
+const {
+  reasoningByMessage,
+  toolStreamItems,
+  collapseActiveReasoning,
+  getReasoningEntry,
+  toggleReasoning,
+  isStreamingMessage,
+  isRenderableMessage,
+  hydrateConversationArtifacts,
+  shouldShowMessageBubble,
+  shouldRenderAssistantContent,
+  persistToolItemsForActiveMessage,
+  initializeAssistantArtifacts,
+  clearAssistantArtifacts,
+  getToolItemsForMessage,
+  shouldShowToolProgress,
+  isToolListCollapsed,
+  toggleCompactToolList,
+  getCompactToolSummaryTitle,
+  getCompactToolSummaryCount,
+  renderToolItemName,
+  getToolStatusLabel,
+  renderToolArguments,
+  renderToolResult,
+  getDisplayedMessageContent
+} = useChatMessageArtifacts({
+  chatStore,
+  activeAssistantMessageId,
+  toolStepLabels: TOOL_STEP_LABELS
+})
 
 const conversationModelLabel = computed(() => {
   const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
@@ -472,27 +517,104 @@ const modelOptions = computed(() => {
 
 const toolDisplayMode = computed(() => (configStore.config.tool_display_mode === 'full' ? 'full' : 'compact'))
 const isToolDisplayFull = computed(() => toolDisplayMode.value === 'full')
+const shouldStickToMessageBottom = ref(true)
 
-const compactToolStats = computed(() => {
-  const total = toolStreamItems.value.length
-  const done = toolStreamItems.value.filter((item) => item.status === 'done').length
-  const error = toolStreamItems.value.filter((item) => item.status === 'error').length
-  const running = total - done - error
-  return { total, done, error, running }
-})
+function getMessageListDistanceFromBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight
+}
 
-const compactToolSummaryTitle = computed(() => {
-  const { total, running, error } = compactToolStats.value
-  if (total === 0) return '执行步骤'
-  if (error > 0) return '执行出现异常'
-  if (running > 0) return '正在执行步骤'
-  return '步骤执行完成'
-})
+function updateShouldStickToMessageBottom() {
+  const element = messageListRef.value
+  if (!element) {
+    shouldStickToMessageBottom.value = true
+    return
+  }
+  shouldStickToMessageBottom.value = getMessageListDistanceFromBottom(element) <= AUTO_SCROLL_BOTTOM_THRESHOLD
+}
 
-const compactToolSummaryCount = computed(() => {
-  const { done, total } = compactToolStats.value
-  return `${done}/${total}`
-})
+function handleMessageListScroll() {
+  updateShouldStickToMessageBottom()
+}
+
+function scheduleScrollMessageListToBottom(force = false) {
+  if (messageListScrollFrame !== null) {
+    cancelAnimationFrame(messageListScrollFrame)
+  }
+
+  messageListScrollFrame = requestAnimationFrame(() => {
+    messageListScrollFrame = null
+    const element = messageListRef.value
+    if (!element) return
+    if (!force && !shouldStickToMessageBottom.value) return
+    element.scrollTop = element.scrollHeight
+    shouldStickToMessageBottom.value = true
+  })
+}
+
+watch(
+  () => chatStore.currentConversationId,
+  () => {
+    shouldStickToMessageBottom.value = true
+    scheduleScrollMessageListToBottom(true)
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => chatStore.currentMessages.length,
+  () => {
+    scheduleScrollMessageListToBottom()
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => {
+    const messages = chatStore.currentMessages
+    if (messages.length === 0) return ''
+    const last = messages[messages.length - 1]
+    return `${last.id}:${last.content.length}`
+  },
+  () => {
+    scheduleScrollMessageListToBottom()
+  },
+  { flush: 'post' }
+)
+
+watch(
+  toolStreamItems,
+  () => {
+    scheduleScrollMessageListToBottom()
+  },
+  { deep: true, flush: 'post' }
+)
+
+watch(
+  reasoningByMessage,
+  () => {
+    scheduleScrollMessageListToBottom()
+  },
+  { deep: true, flush: 'post' }
+)
+
+watch(
+  createDialogVisible,
+  (visible) => {
+    if (visible) return
+    shouldStickToMessageBottom.value = true
+    scheduleScrollMessageListToBottom(true)
+  },
+  { flush: 'post' }
+)
+
+watch(
+  messageListRef,
+  () => {
+    updateShouldStickToMessageBottom()
+    scheduleScrollMessageListToBottom(true)
+  },
+  { flush: 'post' }
+)
 
 function normalizeWorkspaceDirectory(value: string | null | undefined) {
   const normalized = value?.trim()
@@ -679,6 +801,7 @@ onMounted(async () => {
     const first = chatStore.conversations[0]
     chatStore.setCurrentConversation(first.id)
     await chatStore.loadMessages(first.id)
+    hydrateConversationArtifacts(first.id)
     await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(first.id))
     createDialogVisible.value = false
   } else {
@@ -696,8 +819,8 @@ onMounted(async () => {
         pendingToolApproval.value = request
       },
       onStreamEnd: () => {
+        persistToolItemsForActiveMessage()
         collapseActiveReasoning()
-        compactToolListCollapsed.value = false
         pendingToolApproval.value = null
         resolvingToolApproval.value = false
       }
@@ -716,9 +839,15 @@ onMounted(async () => {
     }
 
   }
+
+  scheduleScrollMessageListToBottom(true)
 })
 
 onBeforeUnmount(() => {
+  if (messageListScrollFrame !== null) {
+    cancelAnimationFrame(messageListScrollFrame)
+    messageListScrollFrame = null
+  }
   for (const unlisten of unlistenFns) {
     unlisten()
   }
@@ -864,11 +993,11 @@ function removeUpload(uploadId: string) {
 async function handleSelectConversation(id: string) {
   chatStore.setCurrentConversation(id)
   await chatStore.loadMessages(id)
+  hydrateConversationArtifacts(id)
   await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(id))
   chatStore.streaming = false
   activeAssistantMessageId.value = null
   toolStreamItems.value = []
-  compactToolListCollapsed.value = false
   pendingToolApproval.value = null
   resolvingToolApproval.value = false
   createDialogVisible.value = false
@@ -902,6 +1031,7 @@ async function handleCreateConversation() {
     await persistConversationWorkspaceDirectory(conversation.id, selectedWorkspace)
     chatStore.setCurrentConversation(conversation.id)
     await chatStore.loadMessages(conversation.id)
+    hydrateConversationArtifacts(conversation.id)
     await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(conversation.id))
     inputMessage.value = ''
     createConversationWorkspaceDirectory.value = null
@@ -934,7 +1064,6 @@ async function sendMessage() {
   inputMessage.value = ''
   pendingUploads.value = []
   toolStreamItems.value = []
-  compactToolListCollapsed.value = false
   pendingToolApproval.value = null
 
   const userMsg: Message = {
@@ -954,6 +1083,7 @@ async function sendMessage() {
     created_at: new Date().toISOString()
   }
   chatStore.addMessage(conversationId, assistantMsg)
+  initializeAssistantArtifacts(assistantMsg.id)
 
   activeAssistantMessageId.value = assistantMsg.id
   chatStore.streaming = true
@@ -969,7 +1099,7 @@ async function sendMessage() {
     removePendingAssistantMessage(conversationId, assistantMsg.id)
     activeAssistantMessageId.value = null
     toolStreamItems.value = []
-    compactToolListCollapsed.value = false
+    clearAssistantArtifacts(assistantMsg.id)
     pendingToolApproval.value = null
     resolvingToolApproval.value = false
     inputMessage.value = content
@@ -989,53 +1119,6 @@ function removePendingAssistantMessage(conversationId: string, assistantId: stri
   if (target.role === 'assistant' && !target.content.trim()) {
     messages.splice(index, 1)
   }
-}
-
-function collapseActiveReasoning() {
-  if (!activeAssistantMessageId.value) return
-  const entry = reasoningByMessage.value[activeAssistantMessageId.value]
-  if (!entry || !entry.text.trim()) return
-  entry.collapsed = true
-}
-
-function getReasoningEntry(messageId: string) {
-  return reasoningByMessage.value[messageId]
-}
-
-function toggleReasoning(messageId: string) {
-  const entry = reasoningByMessage.value[messageId]
-  if (!entry) return
-  entry.collapsed = !entry.collapsed
-}
-
-function isStreamingMessage(messageId: string) {
-  return Boolean(chatStore.streaming && activeAssistantMessageId.value === messageId)
-}
-
-function isRenderableMessage(message: Message) {
-  return message.role === 'assistant' || message.role === 'user'
-}
-
-function shouldShowMessageBubble(message: Message) {
-  if (message.role === 'user') return true
-  return Boolean(message.content.trim() || isStreamingMessage(message.id))
-}
-
-function toggleCompactToolList() {
-  compactToolListCollapsed.value = !compactToolListCollapsed.value
-}
-
-function renderToolStepName(name: string) {
-  const normalized = normalizeToolName(name)
-  if (!normalized) return '工具执行'
-  if (TOOL_STEP_LABELS[normalized]) return TOOL_STEP_LABELS[normalized]
-  return renderToolLabel(normalized)
-}
-
-function getToolStatusLabel(status: ToolStreamItem['status']) {
-  if (status === 'done') return '完成'
-  if (status === 'error') return '失败'
-  return '执行中'
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -1186,36 +1269,6 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }
 
-function normalizeToolName(name: string) {
-  const raw = name.trim()
-  if (!raw) return raw
-
-  if (raw.startsWith('workspace_') || raw.startsWith('skills_')) return raw
-
-  const mcpPrefixMatch = raw.match(/^mcp__[^_]+__(.+)$/)
-  if (mcpPrefixMatch && mcpPrefixMatch[1]) {
-    return `mcp__${mcpPrefixMatch[1]}`
-  }
-
-  return raw
-}
-
-function renderToolLabel(name: string) {
-  const raw = name.trim()
-  if (!raw) return '未知工具'
-
-  if (raw.startsWith('mcp__')) {
-    const parts = raw.split('__')
-    if (parts.length >= 3) {
-      const server = parts[1] || 'mcp'
-      const tool = parts.slice(2).join('__') || 'tool'
-      return `${server}.${tool}`
-    }
-  }
-
-  return raw
-}
-
 function resolveRequestedPath(base: string, target: string) {
   const cleanedBase = base.trim()
   const cleanedTarget = target.trim()
@@ -1237,13 +1290,6 @@ function getPathName(input: string) {
   if (!value) return ''
   const parts = value.split(/[\\/]+/)
   return parts[parts.length - 1] || ''
-}
-
-function truncateMiddle(input: string, max = 64) {
-  if (input.length <= max) return input
-  const head = Math.ceil((max - 1) / 2)
-  const tail = Math.floor((max - 1) / 2)
-  return `${input.slice(0, head)}...${input.slice(input.length - tail)}`
 }
 </script>
 
