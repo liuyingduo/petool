@@ -52,7 +52,7 @@
           <el-switch
             :model-value="skill.enabled"
             size="small"
-            @change="(val) => handleToggle(skill, Boolean(val))"
+            @change="handleToggleChange(skill, $event)"
           />
           <el-button size="small" text @click="handleUpdate(skill.id)" :loading="updating === skill.id">
             Update
@@ -167,6 +167,10 @@ async function handleToggle(skill: Skill, enabled: boolean) {
     skill.enabled = previous
     ElMessage.error('Failed to toggle skill')
   }
+}
+
+function handleToggleChange(skill: Skill, value: string | number | boolean) {
+  void handleToggle(skill, Boolean(value))
 }
 
 async function handleUninstall(skillId: string) {

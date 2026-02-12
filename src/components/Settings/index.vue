@@ -174,7 +174,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { useConfigStore } from '@/stores/config'
+import { useConfigStore, type Config, type McpServerConfig } from '@/stores/config'
 import { ElMessage } from 'element-plus'
 import { Folder, Plus, Delete } from '@element-plus/icons-vue'
 import { invoke } from '@tauri-apps/api/core'
@@ -196,7 +196,7 @@ const validating = ref(false)
 const saving = ref(false)
 const showAddMcpDialog = ref(false)
 
-const localConfig = ref({
+const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
   model: 'glm-4.7',
@@ -204,15 +204,31 @@ const localConfig = ref({
   work_directory: '',
   theme: 'dark',
   mcp_servers: []
+}
+
+const localConfig = ref<Config>({
+  ...defaultConfig
 })
 
-const newMcpServer = ref({
-  name: '',
-  transportType: 'stdio',
-  command: '',
-  args: '',
-  url: ''
-})
+interface NewMcpServerForm {
+  name: string
+  transportType: 'stdio' | 'http'
+  command: string
+  args: string
+  url: string
+}
+
+function createDefaultMcpServerForm(): NewMcpServerForm {
+  return {
+    name: '',
+    transportType: 'stdio',
+    command: '',
+    args: '',
+    url: ''
+  }
+}
+
+const newMcpServer = ref<NewMcpServerForm>(createDefaultMcpServerForm())
 
 const dialogVisible = computed({
   get: () => props.modelValue ?? false,
@@ -221,16 +237,11 @@ const dialogVisible = computed({
 
 watch(() => props.modelValue, (val) => {
   if (val) {
-    // Load current config
+    const currentConfig = configStore.config as Config
     localConfig.value = {
-      api_key: '',
-      api_base: 'https://open.bigmodel.cn/api/paas/v4',
-      model: 'glm-4.7',
-      system_prompt: '',
-      work_directory: '',
-      theme: 'dark',
-      mcp_servers: [],
-      ...configStore.config
+      ...defaultConfig,
+      ...currentConfig,
+      mcp_servers: [...(currentConfig.mcp_servers ?? [])]
     }
   }
 })
@@ -273,7 +284,7 @@ async function handleSelectFolder() {
 async function handleSave() {
   saving.value = true
   try {
-    await configStore.saveConfig(localConfig.value as any)
+    await configStore.saveConfig(localConfig.value)
     ElMessage.success('Settings saved successfully')
     dialogVisible.value = false
   } catch (error) {
@@ -289,7 +300,7 @@ function addMcpServer() {
     return
   }
 
-  const server: any = {
+  const server: McpServerConfig = {
     name: newMcpServer.value.name,
     enabled: true,
     transport: {}
@@ -312,13 +323,7 @@ function addMcpServer() {
   showAddMcpDialog.value = false
 
   // Reset form
-  newMcpServer.value = {
-    name: '',
-    transportType: 'stdio',
-    command: '',
-    args: '',
-    url: ''
-  }
+  newMcpServer.value = createDefaultMcpServerForm()
 }
 
 function removeMcpServer(index: number) {

@@ -45,7 +45,7 @@
           <div class="conversation-title">{{ conv.title }}</div>
           <div class="conversation-preview">{{ conv.model }}</div>
         </div>
-        <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, conv.id)">
+        <el-dropdown trigger="click" @command="handleConversationCommand($event, conv.id)">
           <el-icon class="more-icon"><MoreFilled /></el-icon>
           <template #dropdown>
             <el-dropdown-menu>
@@ -113,6 +113,11 @@ async function handleCommand(command: string, id: string) {
     )
     await chatStore.deleteConversation(id)
   }
+}
+
+function handleConversationCommand(command: string | number | object, id: string) {
+  if (typeof command !== 'string') return
+  void handleCommand(command, id)
 }
 
 onMounted(() => {

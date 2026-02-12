@@ -1,7 +1,48 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="512" height="512" rx="100" fill="#07c160"/>
-  <path d="M256 128L320 192H288V256H352V192H384L320 128H256Z" fill="white"/>
-  <path d="M256 384L192 320H224V256H160V320H128L192 384H256Z" fill="white"/>
-  <circle cx="256" cy="256" r="80" stroke="white" stroke-width="16"/>
-  <circle cx="256" cy="256" r="40" fill="white"/>
+  <defs>
+    <linearGradient id="bodyGradient" x1="108" y1="110" x2="404" y2="434" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1C4A35"/>
+      <stop offset="1" stop-color="#0C261B"/>
+    </linearGradient>
+    <linearGradient id="earGradient" x1="158" y1="88" x2="356" y2="146" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#133625"/>
+      <stop offset="1" stop-color="#0A2418"/>
+    </linearGradient>
+    <radialGradient id="eyeGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(0 0) rotate(90) scale(66 45)">
+      <stop stop-color="#19F06A"/>
+      <stop offset="0.5" stop-color="#12C955"/>
+      <stop offset="1" stop-color="#0A7433"/>
+    </radialGradient>
+    <linearGradient id="eyeShell" x1="0" y1="198" x2="0" y2="328" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#070E0A"/>
+      <stop offset="1" stop-color="#020705"/>
+    </linearGradient>
+  </defs>
+
+  <g opacity="0.98">
+    <circle cx="176" cy="116" r="47" fill="url(#earGradient)"/>
+    <circle cx="336" cy="116" r="47" fill="url(#earGradient)"/>
+    <rect x="84" y="112" width="344" height="336" rx="96" fill="url(#bodyGradient)"/>
+    <rect x="84.5" y="112.5" width="343" height="335" rx="95.5" stroke="white" stroke-opacity="0.08"/>
+    <path d="M108 134C128 118 164 112 252 112C196 136 154 166 118 206C104 186 100 157 108 134Z" fill="white" fill-opacity="0.05"/>
+    <path d="M84 350C144 390 220 406 428 382V448H84V350Z" fill="#07140F" fill-opacity="0.35"/>
+  </g>
+
+  <g>
+    <rect x="151" y="196" width="88" height="132" rx="44" fill="url(#eyeShell)"/>
+    <rect x="273" y="196" width="88" height="132" rx="44" fill="url(#eyeShell)"/>
+
+    <ellipse cx="195" cy="264" rx="31" ry="48" fill="url(#eyeGlow)"/>
+    <ellipse cx="317" cy="264" rx="31" ry="48" fill="url(#eyeGlow)"/>
+
+    <ellipse cx="195" cy="226" rx="13" ry="10" fill="#3EFF8F" fill-opacity="0.22"/>
+    <ellipse cx="317" cy="226" rx="13" ry="10" fill="#3EFF8F" fill-opacity="0.22"/>
+
+    <circle cx="212" cy="214" r="10" fill="white" fill-opacity="0.92"/>
+    <circle cx="334" cy="214" r="10" fill="white" fill-opacity="0.92"/>
+    <circle cx="224" cy="228" r="4" fill="white" fill-opacity="0.72"/>
+    <circle cx="346" cy="228" r="4" fill="white" fill-opacity="0.72"/>
+  </g>
+
+  <rect x="236" y="342" width="40" height="14" rx="7" fill="#081A12" fill-opacity="0.55"/>
 </svg>
