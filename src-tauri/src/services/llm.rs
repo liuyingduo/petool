@@ -99,7 +99,6 @@ pub enum LlmStreamEvent {
 pub struct LlmStreamResult {
     pub content: String,
     pub tool_calls: Vec<ChatToolCall>,
-    pub finish_reason: Option<String>,
 }
 
 #[derive(Default)]
@@ -158,23 +157,6 @@ impl LlmService {
         Ok(choice.message.content.clone().unwrap_or_default())
     }
 
-    pub async fn chat_stream<'a>(
-        &'a self,
-        model: &'a str,
-        messages: Vec<ChatMessage>,
-        mut callback: impl FnMut(String) + Send + 'a,
-    ) -> Result<()> {
-        let _ = self
-            .chat_stream_with_tools(model, messages, None, move |event| {
-                if let LlmStreamEvent::Content(chunk) = event {
-                    callback(chunk);
-                }
-            })
-            .await?;
-
-        Ok(())
-    }
-
     pub async fn chat_stream_with_tools<'a>(
         &'a self,
         model: &'a str,
@@ -211,7 +193,6 @@ impl LlmService {
 
         let mut buffer = String::new();
         let mut content = String::new();
-        let mut finish_reason: Option<String> = None;
         let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
 
         while let Some(item) = stream.next().await {
@@ -236,13 +217,6 @@ impl LlmService {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-
-                if finish_reason.is_none() {
-                    finish_reason = value
-                        .pointer("/choices/0/finish_reason")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                }
 
                 if let Some(chunk_text) = value
                     .pointer("/choices/0/delta/content")
@@ -326,7 +300,6 @@ impl LlmService {
         Ok(LlmStreamResult {
             content,
             tool_calls,
-            finish_reason,
         })
     }
 }

@@ -27,6 +27,7 @@
 
           <el-form-item label="Model">
             <el-select v-model="localConfig.model" style="width: 100%">
+              <el-option label="GLM-5" value="glm-5" />
               <el-option label="GLM-4.7" value="glm-4.7" />
               <el-option label="GLM-4-Flash" value="glm-4-flash" />
               <el-option label="GLM-4-Air" value="glm-4-air" />
@@ -199,11 +200,13 @@ const showAddMcpDialog = ref(false)
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
-  model: 'glm-4.7',
+  model: 'glm-5',
   system_prompt: '',
   work_directory: '',
   theme: 'dark',
-  mcp_servers: []
+  mcp_servers: [],
+  tool_permissions: {},
+  tool_path_permissions: []
 }
 
 const localConfig = ref<Config>({

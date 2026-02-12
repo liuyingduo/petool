@@ -10,6 +10,16 @@ export interface Config {
   work_directory?: string
   theme: string
   mcp_servers: McpServerConfig[]
+  tool_permissions: Record<string, ToolPermissionAction>
+  tool_path_permissions: ToolPathPermissionRule[]
+}
+
+export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
+
+export interface ToolPathPermissionRule {
+  tool_pattern: string
+  path_pattern: string
+  action: ToolPermissionAction
 }
 
 export interface McpServerConfig {
@@ -21,10 +31,12 @@ export interface McpServerConfig {
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
-    model: 'glm-4.7',
+    model: 'glm-5',
     system_prompt: '',
     theme: 'dark',
-    mcp_servers: []
+    mcp_servers: [],
+    tool_permissions: {},
+    tool_path_permissions: []
   })
 
   const loading = ref(false)

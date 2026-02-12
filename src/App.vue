@@ -658,7 +658,7 @@ async function handleCreateConversation() {
   const title = newConversationTitle.value.trim() || `新冒险 ${chatStore.conversations.length + 1}`
 
   try {
-    const model = configStore.config.model || 'glm-4.7'
+    const model = configStore.config.model || 'glm-5'
     const conversation = await chatStore.createConversation(title, model)
     chatStore.setCurrentConversation(conversation.id)
     await chatStore.loadMessages(conversation.id)

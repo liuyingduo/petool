@@ -90,7 +90,7 @@ const filteredConversations = computed(() => {
 
 async function handleNewChat() {
   const title = `New Chat ${chatStore.conversations.length + 1}`
-  const model = configStore.config.model || 'glm-4.7'
+  const model = configStore.config.model || 'glm-5'
   const conv = await chatStore.createConversation(title, model)
   chatStore.setCurrentConversation(conv.id)
 }
