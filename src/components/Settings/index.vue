@@ -79,6 +79,13 @@
               <el-radio value="light">Light</el-radio>
             </el-radio-group>
           </el-form-item>
+
+          <el-form-item label="Tool Display">
+            <el-radio-group v-model="localConfig.tool_display_mode">
+              <el-radio value="compact">Compact (Recommended)</el-radio>
+              <el-radio value="full">Full</el-radio>
+            </el-radio-group>
+          </el-form-item>
         </el-form>
       </el-tab-pane>
 
@@ -203,7 +210,9 @@ const defaultConfig: Config = {
   model: 'glm-5',
   system_prompt: '',
   work_directory: '',
+  conversation_workspaces: {},
   theme: 'dark',
+  tool_display_mode: 'compact',
   mcp_servers: [],
   tool_permissions: {},
   tool_path_permissions: []

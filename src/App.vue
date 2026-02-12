@@ -1,32 +1,36 @@
 ﻿<template>
-  <div class="petool-app">
-    <div class="bg-blob blob-a"></div>
-    <div class="bg-blob blob-b"></div>
-
+  <div class="petool-app" :class="{ 'custom-chrome': useCustomWindowChrome }">
     <main
       ref="workspaceRef"
-      class="workspace glass-panel"
-      data-tauri-drag-region
+      class="workspace"
       @mousedown.left="handleWorkspaceMouseDown"
     >
       <div
+        v-if="useCustomWindowChrome"
         class="drag-region"
         data-tauri-drag-region
         @mousedown.left.prevent="handleManualDrag"
       ></div>
       <div
+        v-if="useCustomWindowChrome"
         class="ear ear-left"
         data-tauri-drag-region
         aria-hidden="true"
         @mousedown.left.prevent="handleManualDrag"
       ></div>
       <div
+        v-if="useCustomWindowChrome"
         class="ear ear-right"
         data-tauri-drag-region
         aria-hidden="true"
         @mousedown.left.prevent="handleManualDrag"
       ></div>
-      <div class="pet-eyes-container" :class="{ 'is-asking': Boolean(activeToolApproval) }" aria-hidden="true">
+      <div
+        v-if="useCustomWindowChrome"
+        class="pet-eyes-container"
+        :class="{ 'is-asking': Boolean(activeToolApproval) }"
+        aria-hidden="true"
+      >
         <div class="pet-eye">
           <div class="eye-pupil"></div>
         </div>
@@ -34,7 +38,7 @@
           <div class="eye-pupil"></div>
         </div>
       </div>
-      <div class="window-controls" role="group" aria-label="窗口控制">
+      <div v-if="useCustomWindowChrome" class="window-controls" role="group" aria-label="窗口控制">
         <button class="window-control-btn" type="button" title="最小化" aria-label="最小化" @click="handleMinimize">
           <span class="material-icons-round">remove</span>
         </button>
@@ -51,24 +55,25 @@
           <span class="material-icons-round">close</span>
         </button>
       </div>
-      <aside class="sidebar">
-        <button class="new-btn" @click="openCreateDialog">
-          <span class="material-symbols-outlined">add_circle</span>
-          开启新冒险
-        </button>
+      <div class="workspace-shell glass-panel">
+        <aside class="sidebar">
+          <button class="new-btn" @click="openCreateDialog">
+            <span class="material-symbols-outlined">add_circle</span>
+            开启新冒险
+          </button>
 
         <div class="sidebar-title">进行中</div>
 
         <div class="conversation-list no-scrollbar">
           <button
-            v-for="conv in chatStore.conversations"
+            v-for="(conv, index) in chatStore.conversations"
             :key="conv.id"
             class="conv-item"
             :class="{ active: conv.id === chatStore.currentConversationId }"
             @click="handleSelectConversation(conv.id)"
           >
             <span class="dot"></span>
-            <span class="material-icons-round">palette</span>
+            <span class="material-icons-round">{{ getConversationIcon(index) }}</span>
             <span class="conv-title">{{ conv.title }}</span>
           </button>
 
@@ -76,15 +81,23 @@
         </div>
 
         <div class="sidebar-footer">
-          <div class="user">用户</div>
+          <div class="sidebar-user">
+            <div class="sidebar-avatar-wrap">
+              <img class="sidebar-avatar" :src="userAvatarUrl" alt="User Avatar" />
+            </div>
+            <div class="sidebar-user-meta">
+              <span class="sidebar-user-name">Alex</span>
+              <span class="sidebar-user-plan">Pro Plan</span>
+            </div>
+          </div>
           <button class="settings-btn" @click="showSettings = true">
             <span class="material-icons-round">settings</span>
           </button>
         </div>
-      </aside>
+        </aside>
 
-      <section class="chat-wrap">
-        <div class="chat-body" :class="{ creating: createDialogVisible }">
+        <section class="chat-wrap">
+          <div class="chat-body" :class="{ creating: createDialogVisible }">
           <div v-if="createDialogVisible" class="create-mask"></div>
 
           <div v-if="createDialogVisible" class="create-dialog">
@@ -108,7 +121,7 @@
             <button class="folder-zone" @click="handleSelectFolder">
               <span class="material-icons-round">folder_open</span>
               <span>把文件夹交给 Petool</span>
-              <small>{{ fsStore.currentDirectory || '我会在这个工作区里帮你完成任务。' }}</small>
+              <small>{{ createConversationWorkspaceDirectory || configStore.config.work_directory || '我会在这个工作区里帮你完成任务。' }}</small>
             </button>
 
             <div v-if="recentFolders.length > 0" class="recent-wrap">
@@ -140,6 +153,12 @@
                 <span class="name">Petool</span>
                 <span class="time">{{ formatTime(message.created_at) }}</span>
               </div>
+              <div v-else class="message-meta user-meta">
+                <span class="time">{{ formatTime(message.created_at) }}</span>
+                <div class="message-avatar">
+                  <img class="avatar-img" :src="userAvatarUrl" alt="User Avatar" />
+                </div>
+              </div>
 
               <div
                 v-if="message.role === 'assistant' && getReasoningEntry(message.id)?.text"
@@ -160,12 +179,42 @@
 
                 <div
                   v-if="message.role === 'assistant' && isStreamingMessage(message.id) && toolStreamItems.length > 0"
-                  class="tool-list"
+                  class="tool-progress"
                 >
-                  <div v-for="item in toolStreamItems" :key="item.id" class="tool-item" :class="item.status">
-                    <div class="tool-title">{{ item.name }}</div>
-                    <div v-if="item.arguments" class="tool-text">{{ item.arguments }}</div>
-                    <div v-if="item.result" class="tool-text">{{ item.result }}</div>
+                  <div v-if="isToolDisplayFull" class="tool-list">
+                    <div v-for="item in toolStreamItems" :key="item.id" class="tool-item" :class="item.status">
+                      <div class="tool-title">{{ renderToolStepName(item.name) }}</div>
+                      <div v-if="item.arguments" class="tool-text">
+                        <span class="tool-text-label">参数</span>
+                        {{ item.arguments }}
+                      </div>
+                      <div v-if="item.result" class="tool-text">
+                        <span class="tool-text-label">结果</span>
+                        {{ item.result }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-else class="tool-compact">
+                    <button class="tool-compact-head" type="button" @click="toggleCompactToolList">
+                      <span class="tool-compact-title">{{ compactToolSummaryTitle }}</span>
+                      <span class="tool-compact-count">{{ compactToolSummaryCount }}</span>
+                      <span class="material-icons-round">
+                        {{ compactToolListCollapsed ? 'expand_more' : 'expand_less' }}
+                      </span>
+                    </button>
+                    <div v-show="!compactToolListCollapsed" class="tool-compact-list">
+                      <div
+                        v-for="item in toolStreamItems"
+                        :key="`compact-${item.id}`"
+                        class="tool-compact-item"
+                        :class="item.status"
+                      >
+                        <span class="tool-compact-dot" aria-hidden="true"></span>
+                        <span class="tool-compact-name">{{ renderToolStepName(item.name) }}</span>
+                        <span class="tool-compact-status">{{ getToolStatusLabel(item.status) }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -246,6 +295,32 @@
         </div>
 
         <div class="input-bar" :class="{ disabled: createDialogVisible || !chatStore.currentConversationId }">
+          <div class="model-selector">
+            <button
+              class="model-trigger"
+              type="button"
+              :disabled="createDialogVisible || chatStore.streaming"
+              aria-label="选择模型"
+            >
+              <span class="model-dot"></span>
+              <span class="model-text">{{ activeModelLabel }}</span>
+              <span class="material-icons-round">expand_more</span>
+            </button>
+            <div class="model-dropdown">
+              <div class="model-dropdown-title">选择模型</div>
+              <button
+                v-for="model in modelOptions"
+                :key="model"
+                class="model-option"
+                type="button"
+                :class="{ active: model === activeModelLabel }"
+                @click="handleSelectModel(model)"
+              >
+                <span>{{ model }}</span>
+                <span v-if="model === activeModelLabel" class="material-icons-round">check</span>
+              </button>
+            </div>
+          </div>
           <button class="attach-btn" @click="handleSelectUploadFiles" :disabled="createDialogVisible || chatStore.streaming">
             <span class="material-icons-round">attach_file</span>
           </button>
@@ -264,7 +339,8 @@
             <span class="material-icons-round">arrow_upward</span>
           </button>
         </div>
-      </section>
+        </section>
+      </div>
     </main>
 
     <SettingsDialog v-model="showSettings" />
@@ -328,26 +404,164 @@ const BINARY_FILE_EXTENSIONS = new Set([
 const chatStore = useChatStore()
 const configStore = useConfigStore()
 const fsStore = useFilesystemStore()
+const useCustomWindowChrome = import.meta.env.VITE_CUSTOM_CHROME !== '0'
 
 const inputMessage = ref('')
 const newConversationTitle = ref('')
 const showSettings = ref(false)
 const createDialogVisible = ref(false)
+const createConversationWorkspaceDirectory = ref<string | null>(null)
 const pendingUploads = ref<UploadAttachment[]>([])
 const workspaceRef = ref<HTMLElement | null>(null)
 const activeAssistantMessageId = ref<string | null>(null)
 const reasoningByMessage = ref<Record<string, ReasoningEntry>>({})
 const toolStreamItems = ref<ToolStreamItem[]>([])
+const compactToolListCollapsed = ref(false)
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
 const resolvingToolApproval = ref(false)
 const isWindowMaximized = ref(false)
 const unlistenFns: Array<() => void> = []
 const appWindow = getCurrentWindow()
-const { handleManualDrag, handleWorkspaceMouseDown, setupCursorPassthrough, teardownCursorPassthrough } =
+const {
+  handleManualDrag: handleManualDragInternal,
+  handleWorkspaceMouseDown: handleWorkspaceMouseDownInternal
+} =
   usePetWindowBehavior(workspaceRef)
+const userAvatarUrl =
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuBYaZM97JogdW-ya3ULqGOtiyNOHmX7QgQJQ1c7qMdDxTpN__9ZBn0Jq6D5AQiHwClbXSmKaP3yFa-GzJuTHIsZ6OObIjCQ9QHApIpAuKMYIWptOHH6KVzLGp4nU5DO48mIg48o3YedtwFShv6G0Tq-ir30SVT7WgAWCksaPf_PnwnEwCx7rOimt23ZlQC3VUyfRbucQrEvpTkLIEwEwiWZ_gSWFyekl4IxXUqKEUqrS2CVHHlvuJqUmCJBLBYKUuDKiuQqkueqB3Y'
+const pinnedModelLabel = ref<string | null>(null)
+const modelOptionsBase = ['GLM-5', 'GLM-4-Pro', 'Petool-Fast', 'GPT-4o Local']
+const TOOL_STEP_LABELS: Record<string, string> = {
+  workspace_run_command: '执行命令',
+  workspace_list_directory: '浏览目录',
+  workspace_read_file: '读取文件',
+  workspace_write_file: '写入文件',
+  workspace_search_files: '搜索文件',
+  workspace_edit_file: '编辑文件',
+  workspace_delete_file: '删除文件',
+  workspace_move_file: '移动文件',
+  workspace_copy_file: '复制文件',
+  workspace_create_directory: '创建目录',
+  skills_plan: '规划步骤',
+  skills_execute: '执行技能'
+}
+
+const conversationModelLabel = computed(() => {
+  const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
+  return formatModelLabel(source)
+})
+
+const activeModelLabel = computed(() => {
+  return pinnedModelLabel.value || conversationModelLabel.value
+})
+
+const modelOptions = computed(() => {
+  const seen = new Set<string>()
+  const candidates = [activeModelLabel.value, conversationModelLabel.value, ...modelOptionsBase]
+  const options: string[] = []
+
+  for (const model of candidates) {
+    const normalized = model.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    options.push(normalized)
+  }
+
+  return options
+})
+
+const toolDisplayMode = computed(() => (configStore.config.tool_display_mode === 'full' ? 'full' : 'compact'))
+const isToolDisplayFull = computed(() => toolDisplayMode.value === 'full')
+
+const compactToolStats = computed(() => {
+  const total = toolStreamItems.value.length
+  const done = toolStreamItems.value.filter((item) => item.status === 'done').length
+  const error = toolStreamItems.value.filter((item) => item.status === 'error').length
+  const running = total - done - error
+  return { total, done, error, running }
+})
+
+const compactToolSummaryTitle = computed(() => {
+  const { total, running, error } = compactToolStats.value
+  if (total === 0) return '执行步骤'
+  if (error > 0) return '执行出现异常'
+  if (running > 0) return '正在执行步骤'
+  return '步骤执行完成'
+})
+
+const compactToolSummaryCount = computed(() => {
+  const { done, total } = compactToolStats.value
+  return `${done}/${total}`
+})
+
+function normalizeWorkspaceDirectory(value: string | null | undefined) {
+  const normalized = value?.trim()
+  return normalized ? normalized : null
+}
+
+function getDefaultWorkspaceDirectory() {
+  return normalizeWorkspaceDirectory(configStore.config.work_directory)
+}
+
+function getConversationWorkspaceDirectory(conversationId: string | null | undefined) {
+  if (!conversationId) return null
+  return normalizeWorkspaceDirectory(configStore.config.conversation_workspaces?.[conversationId])
+}
+
+function getEffectiveWorkspaceDirectory(conversationId: string | null | undefined) {
+  return getConversationWorkspaceDirectory(conversationId) || getDefaultWorkspaceDirectory()
+}
+
+async function applyWorkspaceDirectory(directory: string | null) {
+  fsStore.currentDirectory = directory
+  if (!directory) {
+    fsStore.files = []
+    return
+  }
+
+  try {
+    const rootFiles = await fsStore.scanDirectory(directory)
+    fsStore.files = rootFiles
+    fsStore.children[directory] = rootFiles
+  } catch {
+    fsStore.files = []
+  }
+}
+
+async function persistConversationWorkspaceDirectory(conversationId: string, directory: string | null) {
+  const currentMap = configStore.config.conversation_workspaces || {}
+  const nextMap = { ...currentMap }
+
+  if (directory) {
+    nextMap[conversationId] = directory
+  } else {
+    delete nextMap[conversationId]
+  }
+
+  const hasChanged =
+    Object.keys(currentMap).length !== Object.keys(nextMap).length ||
+    Object.entries(nextMap).some(([id, path]) => currentMap[id] !== path)
+
+  if (!hasChanged) return
+
+  await configStore.saveConfig({
+    ...configStore.config,
+    conversation_workspaces: nextMap
+  })
+}
+
+function handleManualDrag() {
+  if (!useCustomWindowChrome) return
+  handleManualDragInternal()
+}
+
+function handleWorkspaceMouseDown(event: MouseEvent) {
+  if (!useCustomWindowChrome) return
+  handleWorkspaceMouseDownInternal(event)
+}
 
 const recentFolders = computed(() => {
-  const paths = [fsStore.currentDirectory, configStore.config.work_directory]
+  const paths = [createConversationWorkspaceDirectory.value, fsStore.currentDirectory, configStore.config.work_directory]
     .filter((path): path is string => Boolean(path && path.trim()))
   return Array.from(new Set(paths)).slice(0, 3)
 })
@@ -465,8 +679,10 @@ onMounted(async () => {
     const first = chatStore.conversations[0]
     chatStore.setCurrentConversation(first.id)
     await chatStore.loadMessages(first.id)
+    await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(first.id))
     createDialogVisible.value = false
   } else {
+    await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
     createDialogVisible.value = true
   }
 
@@ -481,30 +697,31 @@ onMounted(async () => {
       },
       onStreamEnd: () => {
         collapseActiveReasoning()
+        compactToolListCollapsed.value = false
         pendingToolApproval.value = null
         resolvingToolApproval.value = false
       }
     }))
   )
 
-  try {
-    await syncWindowMaximizedState()
-    const unlistenResize = await appWindow.listen('tauri://resize', () => {
-      void syncWindowMaximizedState()
-    })
-    unlistenFns.push(unlistenResize)
-  } catch {
-    // ignore window control setup failures in non-Tauri runtime
-  }
+  if (useCustomWindowChrome) {
+    try {
+      await syncWindowMaximizedState()
+      const unlistenResize = await appWindow.listen('tauri://resize', () => {
+        void syncWindowMaximizedState()
+      })
+      unlistenFns.push(unlistenResize)
+    } catch {
+      // ignore window control setup failures in non-Tauri runtime
+    }
 
-  setupCursorPassthrough()
+  }
 })
 
 onBeforeUnmount(() => {
   for (const unlisten of unlistenFns) {
     unlisten()
   }
-  teardownCursorPassthrough()
 })
 
 function renderMarkdown(content: string) {
@@ -540,8 +757,28 @@ function formatTime(isoString: string) {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function formatModelLabel(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return modelOptionsBase[0]
+  if (/^glm-5$/i.test(trimmed)) return 'GLM-5'
+  if (/^glm-4-pro$/i.test(trimmed)) return 'GLM-4-Pro'
+  if (/^petool-fast$/i.test(trimmed)) return 'Petool-Fast'
+  if (/^gpt-4o(\s*local)?$/i.test(trimmed)) return 'GPT-4o Local'
+  return trimmed
+}
+
+function handleSelectModel(model: string) {
+  pinnedModelLabel.value = model
+}
+
+function getConversationIcon(index: number) {
+  const icons = ['folder', 'event_note', 'palette', 'description', 'topic', 'dashboard']
+  return icons[index % icons.length]
+}
+
 function openCreateDialog() {
   newConversationTitle.value = ''
+  createConversationWorkspaceDirectory.value = null
   createDialogVisible.value = true
 }
 
@@ -584,15 +821,14 @@ function closeCreateDialog() {
 }
 
 async function setFolderShortcut(folder: string) {
-  fsStore.currentDirectory = folder
-  const rootFiles = await fsStore.scanDirectory(folder)
-  fsStore.files = rootFiles
-  fsStore.children[folder] = rootFiles
+  createConversationWorkspaceDirectory.value = folder
 }
 
 async function handleSelectFolder() {
   try {
-    await fsStore.selectFolder()
+    const selected = await invoke<string | null>('select_folder')
+    if (!selected) return
+    createConversationWorkspaceDirectory.value = selected
   } catch {
     ElMessage.error('选择文件夹失败')
   }
@@ -628,9 +864,11 @@ function removeUpload(uploadId: string) {
 async function handleSelectConversation(id: string) {
   chatStore.setCurrentConversation(id)
   await chatStore.loadMessages(id)
+  await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(id))
   chatStore.streaming = false
   activeAssistantMessageId.value = null
   toolStreamItems.value = []
+  compactToolListCollapsed.value = false
   pendingToolApproval.value = null
   resolvingToolApproval.value = false
   createDialogVisible.value = false
@@ -656,13 +894,17 @@ async function resolveToolApproval(decision: 'allow_once' | 'allow_always' | 'de
 
 async function handleCreateConversation() {
   const title = newConversationTitle.value.trim() || `新冒险 ${chatStore.conversations.length + 1}`
+  const selectedWorkspace = normalizeWorkspaceDirectory(createConversationWorkspaceDirectory.value)
 
   try {
     const model = configStore.config.model || 'glm-5'
     const conversation = await chatStore.createConversation(title, model)
+    await persistConversationWorkspaceDirectory(conversation.id, selectedWorkspace)
     chatStore.setCurrentConversation(conversation.id)
     await chatStore.loadMessages(conversation.id)
+    await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(conversation.id))
     inputMessage.value = ''
+    createConversationWorkspaceDirectory.value = null
     createDialogVisible.value = false
   } catch (error) {
     ElMessage.error(getErrorMessage(error, '创建任务失败'))
@@ -678,10 +920,21 @@ async function sendMessage() {
   const messageContentForModel = buildMessageForModel(content, uploads)
   const messageContentForView = buildMessageForDisplay(content, uploads)
   const workspaceDirectory = resolveWorkspaceDirectoryForSend(uploads)
+  if (!workspaceDirectory) {
+    ElMessage.warning('请先在“新冒险”选择工作区文件夹，或在设置中配置默认工作目录。')
+    return
+  }
+
+  const outsideUpload = uploads.find((item) => !isPathInside(workspaceDirectory, item.path))
+  if (outsideUpload) {
+    ElMessage.warning(`文件“${outsideUpload.name}”不在当前工作区，请先切换工作区后再发送。`)
+    return
+  }
 
   inputMessage.value = ''
   pendingUploads.value = []
   toolStreamItems.value = []
+  compactToolListCollapsed.value = false
   pendingToolApproval.value = null
 
   const userMsg: Message = {
@@ -716,6 +969,7 @@ async function sendMessage() {
     removePendingAssistantMessage(conversationId, assistantMsg.id)
     activeAssistantMessageId.value = null
     toolStreamItems.value = []
+    compactToolListCollapsed.value = false
     pendingToolApproval.value = null
     resolvingToolApproval.value = false
     inputMessage.value = content
@@ -765,6 +1019,23 @@ function isRenderableMessage(message: Message) {
 function shouldShowMessageBubble(message: Message) {
   if (message.role === 'user') return true
   return Boolean(message.content.trim() || isStreamingMessage(message.id))
+}
+
+function toggleCompactToolList() {
+  compactToolListCollapsed.value = !compactToolListCollapsed.value
+}
+
+function renderToolStepName(name: string) {
+  const normalized = normalizeToolName(name)
+  if (!normalized) return '工具执行'
+  if (TOOL_STEP_LABELS[normalized]) return TOOL_STEP_LABELS[normalized]
+  return renderToolLabel(normalized)
+}
+
+function getToolStatusLabel(status: ToolStreamItem['status']) {
+  if (status === 'done') return '完成'
+  if (status === 'error') return '失败'
+  return '执行中'
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -879,14 +1150,11 @@ function buildMessageForModel(content: string, uploads: UploadAttachment[]) {
 }
 
 function resolveWorkspaceDirectoryForSend(uploads: UploadAttachment[]) {
-  const configuredWorkspace = fsStore.currentDirectory || configStore.config.work_directory || null
+  const conversationId = chatStore.currentConversationId
+  const configuredWorkspace = getEffectiveWorkspaceDirectory(conversationId)
+  if (!configuredWorkspace) return null
   if (uploads.length === 0) return configuredWorkspace
-
-  const firstParent = getParentPath(uploads[0].path)
-  if (!firstParent) return configuredWorkspace
-  if (!configuredWorkspace) return firstParent
-
-  return isPathInside(configuredWorkspace, uploads[0].path) ? configuredWorkspace : firstParent
+  return configuredWorkspace
 }
 
 function isPathInside(basePath: string, targetPath: string) {
@@ -897,17 +1165,6 @@ function isPathInside(basePath: string, targetPath: string) {
 
 function normalizePathForCompare(value: string) {
   return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-}
-
-function getParentPath(input: string) {
-  const value = input.trim().replace(/[\\/]+$/, '')
-  if (!value) return ''
-  const parts = value.split(/[\\/]+/)
-  if (parts.length <= 1) return ''
-  const sep = value.includes('\\') ? '\\' : '/'
-  const parent = parts.slice(0, parts.length - 1).join(sep)
-  if (/^[a-zA-Z]:$/.test(parent)) return `${parent}\\`
-  return parent
 }
 
 function getPathExtension(input: string) {

@@ -52,16 +52,18 @@ fn apply_pet_window_shape(window: &tauri::WebviewWindow) -> Result<(), String> {
         return Ok(());
     }
 
-    const TOP_OFFSET: i32 = 26;
-    const CORNER_RADIUS: i32 = 56;
-    const EAR_WIDTH: i32 = 96;
-    const EAR_HEIGHT: i32 = 56;
-    const EAR_GAP: i32 = 118;
+    // Keep native hit-region aligned with frontend geometry in app-shell.css.
+    const TOP_OFFSET: i32 = 14;
+    const CORNER_RADIUS: i32 = 68;
+    const EAR_WIDTH: i32 = 84;
+    const EAR_HEIGHT: i32 = 50;
+    const LEFT_EAR_OFFSET: i32 = -128;
+    const RIGHT_EAR_OFFSET: i32 = 44;
 
     let body_top = TOP_OFFSET.min(height.saturating_sub(1)).max(0);
     let center_x = width / 2;
-    let left_ear_x = center_x - EAR_GAP - (EAR_WIDTH / 2);
-    let right_ear_x = center_x + EAR_GAP - (EAR_WIDTH / 2);
+    let left_ear_x = (center_x + LEFT_EAR_OFFSET).max(0);
+    let right_ear_x = (center_x + RIGHT_EAR_OFFSET).min(width.saturating_sub(EAR_WIDTH));
 
     let body = unsafe {
         CreateRoundRectRgn(
@@ -190,7 +192,11 @@ async fn main() {
 
                     let window_for_events = main_window.clone();
                     main_window.on_window_event(move |event| {
-                        if matches!(event, tauri::WindowEvent::Resized(_)) {
+                        if matches!(
+                            event,
+                            tauri::WindowEvent::Resized(_)
+                                | tauri::WindowEvent::ScaleFactorChanged { .. }
+                        ) {
                             if let Err(err) = apply_pet_window_shape(&window_for_events) {
                                 if !is_webview_unavailable_error(&err) {
                                     eprintln!("Failed to update shaped window region: {}", err);

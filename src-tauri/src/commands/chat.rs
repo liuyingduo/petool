@@ -595,17 +595,20 @@ fn resolve_workspace_root(
             .filter(|value| !value.is_empty())
     });
 
-    let root = if let Some(path) = configured {
-        let candidate = PathBuf::from(path);
+    let configured_path = configured.ok_or_else(|| {
+        "Workspace directory is not set. Please choose one in 新冒险 or set default Work Directory in Settings."
+            .to_string()
+    })?;
+
+    let root = {
+        let candidate = PathBuf::from(configured_path);
         if !candidate.exists() || !candidate.is_dir() {
             return Err(format!(
                 "Configured work_directory does not exist or is not a directory: {}",
-                path
+                configured_path
             ));
         }
         candidate
-    } else {
-        std::env::current_dir().map_err(|e| e.to_string())?
     };
 
     root.canonicalize().map_err(|e| e.to_string())

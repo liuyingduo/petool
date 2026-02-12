@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_tool_display_mode() -> String {
+    "compact".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: Option<String>,
@@ -8,7 +12,11 @@ pub struct Config {
     pub model: String,
     pub system_prompt: Option<String>,
     pub work_directory: Option<String>,
+    #[serde(default)]
+    pub conversation_workspaces: HashMap<String, String>,
     pub theme: String,
+    #[serde(default = "default_tool_display_mode")]
+    pub tool_display_mode: String,
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub tool_permissions: HashMap<String, ToolPermissionAction>,
@@ -53,7 +61,9 @@ impl Default for Config {
             model: "glm-5".to_string(),
             system_prompt: None,
             work_directory: None,
+            conversation_workspaces: HashMap::new(),
             theme: "dark".to_string(),
+            tool_display_mode: default_tool_display_mode(),
             mcp_servers: Vec::new(),
             tool_permissions: HashMap::new(),
             tool_path_permissions: Vec::new(),

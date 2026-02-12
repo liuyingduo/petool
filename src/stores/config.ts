@@ -8,13 +8,16 @@ export interface Config {
   model: string
   system_prompt?: string
   work_directory?: string
+  conversation_workspaces: Record<string, string>
   theme: string
+  tool_display_mode: ToolDisplayMode
   mcp_servers: McpServerConfig[]
   tool_permissions: Record<string, ToolPermissionAction>
   tool_path_permissions: ToolPathPermissionRule[]
 }
 
 export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
+export type ToolDisplayMode = 'compact' | 'full'
 
 export interface ToolPathPermissionRule {
   tool_pattern: string
@@ -33,7 +36,9 @@ export const useConfigStore = defineStore('config', () => {
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-5',
     system_prompt: '',
+    conversation_workspaces: {},
     theme: 'dark',
+    tool_display_mode: 'compact',
     mcp_servers: [],
     tool_permissions: {},
     tool_path_permissions: []
