@@ -27,10 +27,11 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-mod tool_catalog;
-mod web_tools;
+mod browser_tools;
 mod image_tools;
 mod process_tools;
+mod tool_catalog;
+mod web_tools;
 
 type ToolApprovalSender = oneshot::Sender<ToolApprovalDecision>;
 
@@ -133,6 +134,7 @@ const TODO_WRITE_TOOL: &str = "todo_write";
 const TODO_READ_TOOL: &str = "todo_read";
 const WEB_FETCH_TOOL: &str = "web_fetch";
 const WEB_SEARCH_TOOL: &str = "web_search";
+const BROWSER_TOOL: &str = "browser";
 const BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
 const IMAGE_PROBE_TOOL: &str = "image_probe";
 const SESSIONS_LIST_TOOL: &str = "sessions_list";
@@ -175,6 +177,7 @@ enum RuntimeTool {
     TodoRead,
     WebFetch,
     WebSearch,
+    Browser,
     BrowserNavigate,
     ImageProbe,
     SessionsList,
@@ -456,7 +459,15 @@ async fn persist_tool_result_message(
     result_text: String,
 ) -> Result<(), String> {
     let metadata = build_tool_call_metadata(tool_call)?;
-    insert_message(pool, conversation_id, "tool", &result_text, Some(metadata), None).await?;
+    insert_message(
+        pool,
+        conversation_id,
+        "tool",
+        &result_text,
+        Some(metadata),
+        None,
+    )
+    .await?;
 
     context_messages.push(ChatMessage {
         role: "tool".to_string(),
@@ -854,7 +865,6 @@ fn should_auto_allow_batch_tool(tool_name: &str) -> bool {
             | TODO_WRITE_TOOL
             | WEB_FETCH_TOOL
             | WEB_SEARCH_TOOL
-            | BROWSER_NAVIGATE_TOOL
             | IMAGE_PROBE_TOOL
             | SESSIONS_LIST_TOOL
             | SESSIONS_HISTORY_TOOL
@@ -1838,8 +1848,12 @@ async fn execute_web_search(arguments: &Value) -> Result<Value, String> {
     web_tools::execute_web_search(arguments).await
 }
 
+async fn execute_browser(arguments: &Value) -> Result<Value, String> {
+    browser_tools::execute_browser(arguments).await
+}
+
 async fn execute_browser_navigate(arguments: &Value) -> Result<Value, String> {
-    web_tools::execute_browser_navigate(arguments).await
+    browser_tools::execute_browser_navigate_compat(arguments).await
 }
 async fn execute_image_probe(arguments: &Value, workspace_root: &Path) -> Result<Value, String> {
     image_tools::execute_image_probe(arguments, workspace_root).await
@@ -2141,6 +2155,7 @@ async fn execute_core_batch_safe_tool(
         TODO_WRITE_TOOL => execute_todo_write(arguments, conversation_id).await,
         WEB_FETCH_TOOL => execute_web_fetch(arguments).await,
         WEB_SEARCH_TOOL => execute_web_search(arguments).await,
+        BROWSER_TOOL => execute_browser(arguments).await,
         BROWSER_NAVIGATE_TOOL => execute_browser_navigate(arguments).await,
         IMAGE_PROBE_TOOL => execute_image_probe(arguments, workspace_root).await,
         SESSIONS_LIST_TOOL => execute_sessions_list(arguments, pool).await,
@@ -2299,6 +2314,7 @@ async fn execute_runtime_tool(
         RuntimeTool::TodoRead => execute_todo_read(arguments, conversation_id).await,
         RuntimeTool::WebFetch => execute_web_fetch(arguments).await,
         RuntimeTool::WebSearch => execute_web_search(arguments).await,
+        RuntimeTool::Browser => execute_browser(arguments).await,
         RuntimeTool::BrowserNavigate => execute_browser_navigate(arguments).await,
         RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
         RuntimeTool::SessionsList => execute_sessions_list(arguments, pool).await,
@@ -2702,49 +2718,50 @@ pub async fn get_messages(
                     _ => MessageRole::User,
                 };
 
-                let tool_calls: Option<Vec<ToolCall>> = tool_calls_raw.as_deref().and_then(|value| {
-                    serde_json::from_str::<Vec<ToolCall>>(value)
-                        .ok()
-                        .or_else(|| {
-                            serde_json::from_str::<Vec<ChatToolCall>>(value)
-                                .ok()
-                                .map(|calls| {
-                                    calls
-                                        .into_iter()
-                                        .map(|call| ToolCall {
-                                            id: call.id,
-                                            tool_name: call.function.name,
-                                            arguments: serde_json::from_str(
-                                                &call.function.arguments,
-                                            )
-                                            .unwrap_or_else(|_| {
-                                                json!({
-                                                    "raw_arguments": call.function.arguments
-                                                })
-                                            }),
-                                        })
-                                        .collect()
-                                })
-                        })
-                        .or_else(|| {
-                            serde_json::from_str::<Value>(value).ok().and_then(|meta| {
-                                let tool_call_id = meta
-                                    .get("tool_call_id")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string)?;
-                                let tool_name = meta
-                                    .get("tool_name")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("tool")
-                                    .to_string();
-                                Some(vec![ToolCall {
-                                    id: tool_call_id,
-                                    tool_name,
-                                    arguments: json!({}),
-                                }])
+                let tool_calls: Option<Vec<ToolCall>> =
+                    tool_calls_raw.as_deref().and_then(|value| {
+                        serde_json::from_str::<Vec<ToolCall>>(value)
+                            .ok()
+                            .or_else(|| {
+                                serde_json::from_str::<Vec<ChatToolCall>>(value)
+                                    .ok()
+                                    .map(|calls| {
+                                        calls
+                                            .into_iter()
+                                            .map(|call| ToolCall {
+                                                id: call.id,
+                                                tool_name: call.function.name,
+                                                arguments: serde_json::from_str(
+                                                    &call.function.arguments,
+                                                )
+                                                .unwrap_or_else(|_| {
+                                                    json!({
+                                                        "raw_arguments": call.function.arguments
+                                                    })
+                                                }),
+                                            })
+                                            .collect()
+                                    })
                             })
-                        })
-                });
+                            .or_else(|| {
+                                serde_json::from_str::<Value>(value).ok().and_then(|meta| {
+                                    let tool_call_id = meta
+                                        .get("tool_call_id")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string)?;
+                                    let tool_name = meta
+                                        .get("tool_name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    Some(vec![ToolCall {
+                                        id: tool_call_id,
+                                        tool_name,
+                                        arguments: json!({}),
+                                    }])
+                                })
+                            })
+                    });
 
                 Message {
                     id,

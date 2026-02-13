@@ -5,6 +5,18 @@ fn default_tool_display_mode() -> String {
     "compact".to_string()
 }
 
+fn default_browser_enabled() -> bool {
+    true
+}
+
+fn default_browser_default_profile() -> String {
+    "openclaw".to_string()
+}
+
+fn default_browser_operation_timeout_ms() -> u64 {
+    20_000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: Option<String>,
@@ -22,6 +34,8 @@ pub struct Config {
     pub tool_permissions: HashMap<String, ToolPermissionAction>,
     #[serde(default)]
     pub tool_path_permissions: Vec<ToolPathPermissionRule>,
+    #[serde(default)]
+    pub browser: BrowserConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +67,99 @@ pub enum McpTransport {
     Http { url: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserEngine {
+    Chrome,
+    Chromium,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserViewport {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for BrowserViewport {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 800,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserProfileConfig {
+    #[serde(default)]
+    pub engine: BrowserEngine,
+    #[serde(default)]
+    pub headless: bool,
+    #[serde(default)]
+    pub executable_path: Option<String>,
+    #[serde(default)]
+    pub cdp_url: Option<String>,
+    #[serde(default)]
+    pub user_data_dir: Option<String>,
+    #[serde(default = "default_openclaw_color")]
+    pub color: String,
+    #[serde(default)]
+    pub viewport: BrowserViewport,
+}
+
+impl Default for BrowserProfileConfig {
+    fn default() -> Self {
+        Self {
+            engine: BrowserEngine::Chrome,
+            headless: false,
+            executable_path: None,
+            cdp_url: None,
+            user_data_dir: None,
+            color: default_openclaw_color(),
+            viewport: BrowserViewport::default(),
+        }
+    }
+}
+
+fn default_openclaw_color() -> String {
+    "#FF6A00".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserConfig {
+    #[serde(default = "default_browser_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_browser_default_profile")]
+    pub default_profile: String,
+    #[serde(default)]
+    pub evaluate_enabled: bool,
+    #[serde(default)]
+    pub allow_private_network: bool,
+    #[serde(default = "default_browser_operation_timeout_ms")]
+    pub operation_timeout_ms: u64,
+    #[serde(default = "default_browser_profiles")]
+    pub profiles: HashMap<String, BrowserProfileConfig>,
+}
+
+fn default_browser_profiles() -> HashMap<String, BrowserProfileConfig> {
+    let mut profiles = HashMap::new();
+    profiles.insert("openclaw".to_string(), BrowserProfileConfig::default());
+    profiles
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_browser_enabled(),
+            default_profile: default_browser_default_profile(),
+            evaluate_enabled: false,
+            allow_private_network: false,
+            operation_timeout_ms: default_browser_operation_timeout_ms(),
+            profiles: default_browser_profiles(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -67,6 +174,31 @@ impl Default for Config {
             mcp_servers: Vec::new(),
             tool_permissions: HashMap::new(),
             tool_path_permissions: Vec::new(),
+            browser: BrowserConfig::default(),
         }
+    }
+}
+
+impl Default for BrowserEngine {
+    fn default() -> Self {
+        Self::Chrome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_includes_browser_defaults() {
+        let config = Config::default();
+        assert!(config.browser.enabled);
+        assert_eq!(config.browser.default_profile, "openclaw");
+        assert_eq!(config.browser.operation_timeout_ms, 20_000);
+        assert!(config.browser.profiles.contains_key("openclaw"));
+        let profile = config.browser.profiles.get("openclaw").unwrap();
+        assert_eq!(profile.color, "#FF6A00");
+        assert_eq!(profile.viewport.width, 1280);
+        assert_eq!(profile.viewport.height, 800);
     }
 }

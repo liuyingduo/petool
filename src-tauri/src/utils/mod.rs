@@ -2,14 +2,26 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn get_config_path() -> Result<PathBuf> {
+pub fn get_app_config_dir() -> Result<PathBuf> {
     let config_dir =
         dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
 
     let app_config_dir = config_dir.join("petool");
     fs::create_dir_all(&app_config_dir)?;
 
-    Ok(app_config_dir.join("config.json"))
+    Ok(app_config_dir)
+}
+
+pub fn get_app_log_dir() -> Result<PathBuf> {
+    let data_local_dir = dirs::data_local_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find local data directory"))?;
+    let app_log_dir = data_local_dir.join("petool").join("logs");
+    fs::create_dir_all(&app_log_dir)?;
+    Ok(app_log_dir)
+}
+
+pub fn get_config_path() -> Result<PathBuf> {
+    Ok(get_app_config_dir()?.join("config.json"))
 }
 
 pub fn load_config<T>() -> Result<T>

@@ -13,7 +13,8 @@
 
 .petool-app.custom-chrome {
   background: transparent;
-  --chat-content-top-safe: 62px;
+  --chat-content-top-safe: 56px;
+  border-radius: 34px;
 }
 
 .workspace {
@@ -28,9 +29,9 @@
 }
 
 .petool-app.custom-chrome .workspace {
-  height: calc(100% - 14px);
-  margin-top: 14px;
-  overflow: visible;
+  height: 100%;
+  margin-top: 0;
+  overflow: hidden;
   -webkit-app-region: drag;
 }
 
@@ -73,50 +74,10 @@ label {
   top: 0;
   left: 0;
   right: 0;
-  height: 34px;
+  height: 52px;
   z-index: 30;
   pointer-events: auto;
   -webkit-app-region: drag;
-}
-
-.ear {
-  position: absolute;
-  top: -20px;
-  width: 84px;
-  height: 50px;
-  border-radius: 42px 42px 0 0;
-  background: #f5f3ee;
-  border: 1px solid #ece7de;
-  border-bottom: none;
-  z-index: 18;
-  pointer-events: auto;
-  -webkit-app-region: drag;
-}
-
-.ear::before {
-  display: none;
-}
-
-.ear::after {
-  content: '';
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 44px;
-  height: 28px;
-  border-radius: 44px 44px 0 0;
-  background: #ebe7de;
-}
-
-.ear-left {
-  left: calc(50% - 128px);
-  transform: rotate(-6deg);
-}
-
-.ear-right {
-  left: calc(50% + 44px);
-  transform: rotate(6deg);
 }
 
 .pet-eyes-container {
@@ -1366,10 +1327,6 @@ label {
 
   .upload-strip {
     margin: 0 14px 8px;
-  }
-
-  .ear {
-    display: none;
   }
 
   .pet-eyes-container {

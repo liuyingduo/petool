@@ -14,6 +14,7 @@ export interface Config {
   mcp_servers: McpServerConfig[]
   tool_permissions: Record<string, ToolPermissionAction>
   tool_path_permissions: ToolPathPermissionRule[]
+  browser: BrowserConfig
 }
 
 export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
@@ -31,6 +32,32 @@ export interface McpServerConfig {
   enabled: boolean
 }
 
+export type BrowserEngine = 'chromium' | 'chrome'
+
+export interface BrowserViewport {
+  width: number
+  height: number
+}
+
+export interface BrowserProfileConfig {
+  engine: BrowserEngine
+  headless: boolean
+  executable_path?: string | null
+  cdp_url?: string | null
+  user_data_dir?: string | null
+  color: string
+  viewport: BrowserViewport
+}
+
+export interface BrowserConfig {
+  enabled: boolean
+  default_profile: string
+  evaluate_enabled: boolean
+  allow_private_network: boolean
+  operation_timeout_ms: number
+  profiles: Record<string, BrowserProfileConfig>
+}
+
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
@@ -41,7 +68,28 @@ export const useConfigStore = defineStore('config', () => {
     tool_display_mode: 'compact',
     mcp_servers: [],
     tool_permissions: {},
-    tool_path_permissions: []
+    tool_path_permissions: [],
+    browser: {
+      enabled: true,
+      default_profile: 'openclaw',
+      evaluate_enabled: false,
+      allow_private_network: false,
+      operation_timeout_ms: 20000,
+      profiles: {
+        openclaw: {
+          engine: 'chrome',
+          headless: false,
+          executable_path: null,
+          cdp_url: null,
+          user_data_dir: null,
+          color: '#FF6A00',
+          viewport: {
+            width: 1280,
+            height: 800
+          }
+        }
+      }
+    }
   })
 
   const loading = ref(false)

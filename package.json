@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
+    "browser:prepare": "node scripts/browser/prepare-sidecar.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev.mjs",
@@ -23,6 +24,7 @@
     "highlight.js": "^11.9.0",
     "marked": "^11.0.0",
     "pinia": "^2.1.7",
+    "playwright": "^1.58.2",
     "vue": "^3.4.0",
     "vue-router": "^4.2.5"
   },

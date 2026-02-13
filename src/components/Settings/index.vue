@@ -89,6 +89,108 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- Browser -->
+      <el-tab-pane label="Browser" name="browser">
+        <el-form :model="localConfig.browser" label-width="160px">
+          <el-form-item label="Enable Browser Tool">
+            <el-switch v-model="localConfig.browser.enabled" />
+          </el-form-item>
+
+          <el-form-item label="Default Profile">
+            <el-select v-model="localConfig.browser.default_profile" style="width: 100%">
+              <el-option
+                v-for="name in browserProfileNames"
+                :key="name"
+                :label="name"
+                :value="name"
+              />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="Evaluate Enabled">
+            <el-switch v-model="localConfig.browser.evaluate_enabled" />
+          </el-form-item>
+
+          <el-form-item label="Allow Private Network">
+            <el-switch v-model="localConfig.browser.allow_private_network" />
+          </el-form-item>
+
+          <el-form-item label="Timeout (ms)">
+            <el-input-number
+              v-model="localConfig.browser.operation_timeout_ms"
+              :min="1000"
+              :max="120000"
+              :step="1000"
+              style="width: 220px"
+            />
+          </el-form-item>
+
+          <el-divider content-position="left">Profile: {{ activeBrowserProfileName }}</el-divider>
+
+          <el-alert
+            title="接管模式说明"
+            type="info"
+            :closable="false"
+            description="优先填写 CDP URL 来接管你已打开的浏览器（需该浏览器带 --remote-debugging-port 启动）。如果不填 CDP URL，则使用 Executable Path 启动你指定的浏览器。"
+            style="margin-bottom: 12px"
+          />
+
+          <el-form-item label="Headless">
+            <el-switch v-model="activeBrowserProfile.headless" />
+          </el-form-item>
+
+          <el-form-item label="CDP URL">
+            <el-input
+              v-model="activeBrowserProfile.cdp_url"
+              placeholder="例如: http://127.0.0.1:9222"
+            />
+          </el-form-item>
+
+          <el-form-item label="Executable Path">
+            <el-input
+              v-model="activeBrowserProfile.executable_path"
+              placeholder="例如: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+            />
+          </el-form-item>
+
+          <el-form-item label="User Data Dir">
+            <el-input
+              v-model="activeBrowserProfile.user_data_dir"
+              placeholder="可选，未填则使用 PETool 默认目录"
+            />
+          </el-form-item>
+
+          <el-form-item label="Viewport">
+            <div class="viewport-row">
+              <el-input-number
+                v-model="activeBrowserProfile.viewport.width"
+                :min="320"
+                :max="8192"
+              />
+              <span class="viewport-sep">x</span>
+              <el-input-number
+                v-model="activeBrowserProfile.viewport.height"
+                :min="240"
+                :max="8192"
+              />
+            </div>
+          </el-form-item>
+
+          <el-form-item label="Profile Data">
+            <div class="browser-actions">
+              <el-button @click="openBrowserProfileDir">
+                <el-icon><FolderOpened /></el-icon>
+                Open Profile Directory
+              </el-button>
+              <el-button type="danger" plain @click="resetBrowserProfile">
+                <el-icon><RefreshRight /></el-icon>
+                Reset Profile
+              </el-button>
+            </div>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <!-- MCP Servers -->
       <el-tab-pane label="MCP Servers" name="mcp">
         <div class="mcp-list">
@@ -182,9 +284,15 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { useConfigStore, type Config, type McpServerConfig } from '@/stores/config'
-import { ElMessage } from 'element-plus'
-import { Folder, Plus, Delete } from '@element-plus/icons-vue'
+import {
+  useConfigStore,
+  type BrowserConfig,
+  type BrowserProfileConfig,
+  type Config,
+  type McpServerConfig
+} from '@/stores/config'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Folder, FolderOpened, Plus, Delete, RefreshRight } from '@element-plus/icons-vue'
 import { invoke } from '@tauri-apps/api/core'
 
 interface Props {
@@ -204,6 +312,32 @@ const validating = ref(false)
 const saving = ref(false)
 const showAddMcpDialog = ref(false)
 
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+const defaultBrowserConfig: BrowserConfig = {
+  enabled: true,
+  default_profile: 'openclaw',
+  evaluate_enabled: false,
+  allow_private_network: false,
+  operation_timeout_ms: 20000,
+  profiles: {
+    openclaw: {
+      engine: 'chrome',
+      headless: false,
+      executable_path: null,
+      cdp_url: null,
+      user_data_dir: null,
+      color: '#FF6A00',
+      viewport: {
+        width: 1280,
+        height: 800
+      }
+    }
+  }
+}
+
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
@@ -215,7 +349,8 @@ const defaultConfig: Config = {
   tool_display_mode: 'compact',
   mcp_servers: [],
   tool_permissions: {},
-  tool_path_permissions: []
+  tool_path_permissions: [],
+  browser: deepClone(defaultBrowserConfig)
 }
 
 const localConfig = ref<Config>({
@@ -247,14 +382,75 @@ const dialogVisible = computed({
   set: (val) => emit('update:modelValue', val)
 })
 
+function ensureBrowserConfig(target: Config) {
+  if (!target.browser) {
+    target.browser = deepClone(defaultBrowserConfig)
+  }
+  if (!target.browser.profiles || Object.keys(target.browser.profiles).length === 0) {
+    target.browser.profiles = deepClone(defaultBrowserConfig.profiles)
+  }
+  if (!target.browser.default_profile || !target.browser.profiles[target.browser.default_profile]) {
+    target.browser.default_profile = Object.keys(target.browser.profiles)[0] || 'openclaw'
+  }
+  const profile = target.browser.profiles[target.browser.default_profile]
+  if (!profile.engine) {
+    profile.engine = 'chrome'
+  }
+  if (profile.executable_path === undefined) {
+    profile.executable_path = null
+  }
+  if (profile.cdp_url === undefined) {
+    profile.cdp_url = null
+  }
+  if (profile.user_data_dir === undefined) {
+    profile.user_data_dir = null
+  }
+  if (!profile.viewport) {
+    profile.viewport = { width: 1280, height: 800 }
+  }
+}
+
+const browserProfileNames = computed(() => {
+  const browser = localConfig.value.browser
+  if (!browser?.profiles) return []
+  return Object.keys(browser.profiles)
+})
+
+const activeBrowserProfileName = computed({
+  get: () => {
+    ensureBrowserConfig(localConfig.value)
+    return localConfig.value.browser.default_profile
+  },
+  set: (value: string) => {
+    ensureBrowserConfig(localConfig.value)
+    if (localConfig.value.browser.profiles[value]) {
+      localConfig.value.browser.default_profile = value
+    }
+  }
+})
+
+const activeBrowserProfile = computed<BrowserProfileConfig>({
+  get: () => {
+    ensureBrowserConfig(localConfig.value)
+    const name = activeBrowserProfileName.value
+    return localConfig.value.browser.profiles[name]
+  },
+  set: (value) => {
+    ensureBrowserConfig(localConfig.value)
+    localConfig.value.browser.profiles[activeBrowserProfileName.value] = value
+  }
+})
+
 watch(() => props.modelValue, (val) => {
   if (val) {
     const currentConfig = configStore.config as Config
     localConfig.value = {
       ...defaultConfig,
       ...currentConfig,
-      mcp_servers: [...(currentConfig.mcp_servers ?? [])]
+      mcp_servers: [...(currentConfig.mcp_servers ?? [])],
+      browser: deepClone(currentConfig.browser ?? defaultBrowserConfig)
     }
+    ensureBrowserConfig(localConfig.value)
   }
 })
 
@@ -296,6 +492,7 @@ async function handleSelectFolder() {
 async function handleSave() {
   saving.value = true
   try {
+    ensureBrowserConfig(localConfig.value)
     await configStore.saveConfig(localConfig.value)
     ElMessage.success('Settings saved successfully')
     dialogVisible.value = false
@@ -341,6 +538,40 @@ function addMcpServer() {
 function removeMcpServer(index: number) {
   localConfig.value.mcp_servers.splice(index, 1)
 }
+
+async function openBrowserProfileDir() {
+  try {
+    const profilePath = await invoke<string>('open_browser_profile_dir', {
+      profile: activeBrowserProfileName.value
+    })
+    ElMessage.success(`Opened: ${profilePath}`)
+  } catch (error) {
+    ElMessage.error('Failed to open browser profile directory')
+  }
+}
+
+async function resetBrowserProfile() {
+  try {
+    await ElMessageBox.confirm(
+      `This will delete profile "${activeBrowserProfileName.value}" browser data (cookies/session). Continue?`,
+      'Reset Browser Profile',
+      {
+        type: 'warning',
+        confirmButtonText: 'Reset',
+        cancelButtonText: 'Cancel'
+      }
+    )
+    await invoke('reset_browser_profile', {
+      profile: activeBrowserProfileName.value
+    })
+    ElMessage.success('Browser profile reset complete')
+  } catch (error) {
+    // user cancelled or reset failed
+    if (error !== 'cancel') {
+      ElMessage.error('Failed to reset browser profile')
+    }
+  }
+}
 </script>
 
 <style scoped>
@@ -374,5 +605,20 @@ function removeMcpServer(index: number) {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.viewport-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.viewport-sep {
+  color: var(--color-text-secondary);
+}
+
+.browser-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>

@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 
 use super::{
     is_forbidden_loopback_host, read_optional_string_argument, read_string_argument,
-    read_u64_argument, DEFAULT_EXA_MCP_ENDPOINT, DEFAULT_WEB_ACCEPT_LANGUAGE, DEFAULT_WEB_USER_AGENT,
+    read_u64_argument, DEFAULT_EXA_MCP_ENDPOINT, DEFAULT_WEB_ACCEPT_LANGUAGE,
+    DEFAULT_WEB_USER_AGENT,
 };
 
 fn decode_basic_html_entities(value: &str) -> String {
@@ -126,7 +127,12 @@ fn html_to_markdown_basic(html: &str) -> String {
             .to_string();
     }
 
-    for pattern in [r"(?is)<br\s*/?>", r"(?is)</p>", r"(?is)</div>", r"(?is)</li>"] {
+    for pattern in [
+        r"(?is)<br\s*/?>",
+        r"(?is)</p>",
+        r"(?is)</div>",
+        r"(?is)</li>",
+    ] {
         if let Ok(regex) = Regex::new(pattern) {
             value = regex.replace_all(&value, "\n").to_string();
         }
@@ -225,6 +231,7 @@ async fn fetch_web_raw(
     Err(last_error)
 }
 
+#[allow(dead_code)]
 async fn fetch_web_content(
     url_raw: &str,
     timeout_ms: u64,
@@ -796,6 +803,7 @@ pub(super) async fn execute_web_search(arguments: &Value) -> Result<Value, Strin
     }))
 }
 
+#[allow(dead_code)]
 pub(super) async fn execute_browser_navigate(arguments: &Value) -> Result<Value, String> {
     let url = read_string_argument(arguments, "url")?;
     let max_links = read_u64_argument(arguments, "max_links", 30).clamp(1, 200) as usize;

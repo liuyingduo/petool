@@ -8,6 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+browser-sidecar/node_modules
+browser-sidecar/dist
 dist
 dist-ssr
 *.local
@@ -26,4 +28,6 @@ dist-ssr
 # Tauri
 src-tauri/target
 src-tauri/Cargo.lock
+src-tauri/resources/browser-sidecar/dist
+src-tauri/binaries/browser-node*
 nul

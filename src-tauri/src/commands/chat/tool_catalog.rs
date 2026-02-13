@@ -4,14 +4,15 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::{
-    ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL,
-    CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, SESSIONS_HISTORY_TOOL,
-    SESSIONS_LIST_TOOL, SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL, SKILL_EXECUTE_TOOL,
-    SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL, TODO_WRITE_TOOL, WEB_FETCH_TOOL,
-    WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL, WORKSPACE_CODESEARCH_TOOL, WORKSPACE_EDIT_TOOL,
+    ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL, BROWSER_TOOL,
+    CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL,
+    SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL,
+    SKILL_LIST_TOOL, TODO_READ_TOOL, TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL,
+    WORKSPACE_APPLY_PATCH_TOOL, WORKSPACE_CODESEARCH_TOOL, WORKSPACE_EDIT_TOOL,
     WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL, WORKSPACE_LIST_TOOL, WORKSPACE_LSP_SYMBOLS_TOOL,
     WORKSPACE_PROCESS_LIST_TOOL, WORKSPACE_PROCESS_READ_TOOL, WORKSPACE_PROCESS_START_TOOL,
-    WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL, WORKSPACE_WRITE_TOOL,
+    WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL,
+    WORKSPACE_WRITE_TOOL,
 };
 
 fn register_runtime_tool(
@@ -487,8 +488,29 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
     register_runtime_tool(
         &mut tools,
         &mut tool_map,
+        BROWSER_TOOL,
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace).".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "status|start|stop|profiles|tabs|open|focus|close|navigate|snapshot|screenshot|act|console|errors|requests|response_body|pdf|cookies_get|cookies_set|cookies_clear|storage_get|storage_set|storage_clear|set_offline|set_headers|set_credentials|set_geolocation|set_media|set_timezone|set_locale|set_device|trace_start|trace_stop|evaluate|reset_profile"
+                },
+                "profile": { "type": "string" },
+                "target_id": { "type": "string" },
+                "params": { "type": "object" }
+            },
+            "required": ["action"]
+        }),
+        RuntimeTool::Browser,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
         BROWSER_NAVIGATE_TOOL,
-        "Retrieve page title and links from a web URL (lightweight browser surrogate).".to_string(),
+        "Legacy browser navigate alias. Internally forwards to browser action=navigate and returns title+links payload.".to_string(),
         json!({
             "type": "object",
             "properties": {

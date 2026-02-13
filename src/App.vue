@@ -13,20 +13,6 @@
       ></div>
       <div
         v-if="useCustomWindowChrome"
-        class="ear ear-left"
-        data-tauri-drag-region
-        aria-hidden="true"
-        @mousedown.left.prevent="handleManualDrag"
-      ></div>
-      <div
-        v-if="useCustomWindowChrome"
-        class="ear ear-right"
-        data-tauri-drag-region
-        aria-hidden="true"
-        @mousedown.left.prevent="handleManualDrag"
-      ></div>
-      <div
-        v-if="useCustomWindowChrome"
         class="pet-eyes-container"
         :class="{ 'is-asking': Boolean(activeToolApproval) }"
         aria-hidden="true"
@@ -438,7 +424,9 @@ let messageListScrollFrame: number | null = null
 const appWindow = getCurrentWindow()
 const {
   handleManualDrag: handleManualDragInternal,
-  handleWorkspaceMouseDown: handleWorkspaceMouseDownInternal
+  handleWorkspaceMouseDown: handleWorkspaceMouseDownInternal,
+  setupCursorPassthrough,
+  teardownCursorPassthrough
 } =
   usePetWindowBehavior(workspaceRef)
 const userAvatarUrl =
@@ -828,6 +816,7 @@ onMounted(async () => {
   )
 
   if (useCustomWindowChrome) {
+    setupCursorPassthrough()
     try {
       await syncWindowMaximizedState()
       const unlistenResize = await appWindow.listen('tauri://resize', () => {
@@ -844,6 +833,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  teardownCursorPassthrough()
   if (messageListScrollFrame !== null) {
     cancelAnimationFrame(messageListScrollFrame)
     messageListScrollFrame = null

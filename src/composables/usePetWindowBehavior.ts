@@ -6,13 +6,7 @@ const DRAG_EXCLUDED_SELECTOR =
 
 const DEFAULT_SHAPE = {
   edgeFeather: 2,
-  bodyRadius: 40,
-  earTop: -26,
-  earLeftX: -166,
-  earRightX: 70,
-  earWidth: 96,
-  earHeight: 56,
-  earRadius: 28
+  bodyRadius: 34
 }
 
 export function usePetWindowBehavior(workspaceRef: Ref<HTMLElement | null>) {
@@ -137,7 +131,7 @@ export function usePetWindowBehavior(workspaceRef: Ref<HTMLElement | null>) {
     if (!workspace) return true
 
     const rect = workspace.getBoundingClientRect()
-    const bodyInside = isPointInsideRoundedRect(
+    return isPointInsideRoundedRect(
       clientX,
       clientY,
       rect.left - DEFAULT_SHAPE.edgeFeather,
@@ -145,21 +139,6 @@ export function usePetWindowBehavior(workspaceRef: Ref<HTMLElement | null>) {
       rect.width + DEFAULT_SHAPE.edgeFeather * 2,
       rect.height + DEFAULT_SHAPE.edgeFeather * 2,
       DEFAULT_SHAPE.bodyRadius + DEFAULT_SHAPE.edgeFeather
-    )
-
-    if (bodyInside) return true
-
-    const centerX = rect.left + rect.width / 2
-    const earTop = rect.top + DEFAULT_SHAPE.earTop - DEFAULT_SHAPE.edgeFeather
-    const earWidth = DEFAULT_SHAPE.earWidth + DEFAULT_SHAPE.edgeFeather * 2
-    const earHeight = DEFAULT_SHAPE.earHeight + DEFAULT_SHAPE.edgeFeather * 2
-    const leftEarX = centerX + DEFAULT_SHAPE.earLeftX - DEFAULT_SHAPE.edgeFeather
-    const rightEarX = centerX + DEFAULT_SHAPE.earRightX - DEFAULT_SHAPE.edgeFeather
-    const earRadius = DEFAULT_SHAPE.earRadius + DEFAULT_SHAPE.edgeFeather
-
-    return (
-      isPointInsideRoundedRect(clientX, clientY, leftEarX, earTop, earWidth, earHeight, earRadius) ||
-      isPointInsideRoundedRect(clientX, clientY, rightEarX, earTop, earWidth, earHeight, earRadius)
     )
   }
 

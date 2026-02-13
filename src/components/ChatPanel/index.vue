@@ -50,8 +50,20 @@
               :class="item.status"
             >
               <div class="tool-title">{{ item.name || 'tool' }}</div>
-              <div v-if="item.arguments" class="tool-args">{{ item.arguments }}</div>
-              <div v-if="item.result" class="tool-result">{{ item.result }}</div>
+              <div v-if="item.arguments" class="tool-args">
+                <details v-if="isLongToolText(item.arguments)">
+                  <summary>{{ toolTextPreview(item.arguments) }}</summary>
+                  <pre>{{ item.arguments }}</pre>
+                </details>
+                <template v-else>{{ item.arguments }}</template>
+              </div>
+              <div v-if="item.result" class="tool-result">
+                <details v-if="isLongToolText(item.result)">
+                  <summary>{{ toolTextPreview(item.result) }}</summary>
+                  <pre>{{ item.result }}</pre>
+                </details>
+                <template v-else>{{ item.result }}</template>
+              </div>
             </div>
           </div>
 
@@ -104,6 +116,7 @@ const configStore = useConfigStore()
 const fsStore = useFilesystemStore()
 const inputMessage = ref('')
 const reasoningStream = ref('')
+const TOOL_TEXT_PREVIEW_LENGTH = 220
 const toolStreamItems = ref<Array<{
   id: string
   name: string
@@ -111,6 +124,14 @@ const toolStreamItems = ref<Array<{
   result: string
   status: 'running' | 'done' | 'error'
 }>>([])
+
+function isLongToolText(value: string) {
+  return value.length > TOOL_TEXT_PREVIEW_LENGTH
+}
+
+function toolTextPreview(value: string) {
+  return value.slice(0, TOOL_TEXT_PREVIEW_LENGTH) + ' ...'
+}
 
 // Listen for streaming events
 listen('chat-chunk', (event) => {
@@ -440,6 +461,12 @@ interface Message {
   border-radius: 6px;
   padding: 8px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.tool-stream-card pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 6px 0 0;
 }
 
 .tool-stream-card.done {
