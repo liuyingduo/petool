@@ -1,3 +1,5 @@
+use crate::services::llm::LlmService;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -6,8 +8,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::{
-    is_forbidden_loopback_host, read_optional_string_argument, read_u64_argument,
-    resolve_workspace_target, workspace_relative_display_path,
+    is_forbidden_loopback_host, read_bool_argument, read_optional_string_argument,
+    read_string_argument, read_u64_argument, resolve_workspace_target,
+    workspace_relative_display_path,
 };
 
 fn parse_jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -78,6 +81,18 @@ fn detect_image_metadata(bytes: &[u8]) -> (String, Option<u32>, Option<u32>) {
         return ("jpeg".to_string(), Some(width), Some(height));
     }
     ("unknown".to_string(), None, None)
+}
+
+fn image_format_to_mime(format: &str) -> Option<&'static str> {
+    match format {
+        "png" => Some("image/png"),
+        "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "webp" => Some("image/webp"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
 }
 
 pub(super) async fn execute_image_probe(
@@ -162,4 +177,94 @@ pub(super) async fn execute_image_probe(
         result["content_type"] = content_type.clone();
     }
     Ok(result)
+}
+
+pub(super) async fn execute_image_understand(
+    arguments: &Value,
+    workspace_root: &Path,
+    llm_service: &LlmService,
+) -> Result<Value, String> {
+    let prompt = read_string_argument(arguments, "prompt")?;
+    let model =
+        read_optional_string_argument(arguments, "model").unwrap_or_else(|| "glm-4.6v".to_string());
+    let enable_thinking = read_bool_argument(arguments, "thinking", false);
+    let max_bytes =
+        read_u64_argument(arguments, "max_bytes", 4 * 1024 * 1024).clamp(8_192, 8_388_608) as usize;
+
+    let path = read_optional_string_argument(arguments, "path");
+    let url = read_optional_string_argument(arguments, "url");
+
+    if path.is_some() && url.is_some() {
+        return Err("Provide either 'path' or 'url', not both".to_string());
+    }
+
+    let (source_kind, source, image_url, metadata) = if let Some(path_value) = path {
+        let resolved = resolve_workspace_target(workspace_root, &path_value, false)?;
+        let file_metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
+        if !file_metadata.is_file() {
+            return Err(format!("Not a file: {}", resolved.display()));
+        }
+        if file_metadata.len() as usize > max_bytes {
+            return Err(format!(
+                "Image exceeds max_bytes ({} > {})",
+                file_metadata.len(),
+                max_bytes
+            ));
+        }
+
+        let bytes = fs::read(&resolved).map_err(|e| e.to_string())?;
+        let (format, width, height) = detect_image_metadata(&bytes);
+        let mime = image_format_to_mime(&format)
+            .ok_or_else(|| format!("Unsupported or unknown image format: {}", format))?;
+        let encoded = BASE64_STANDARD.encode(&bytes);
+        let data_url = format!("data:{};base64,{}", mime, encoded);
+
+        (
+            "path".to_string(),
+            workspace_relative_display_path(workspace_root, &resolved),
+            data_url,
+            json!({
+                "format": format,
+                "width": width,
+                "height": height,
+                "byte_length": bytes.len()
+            }),
+        )
+    } else if let Some(url_value) = url {
+        if url_value.starts_with("data:image/") {
+            ("url".to_string(), url_value.clone(), url_value, Value::Null)
+        } else {
+            let parsed =
+                reqwest::Url::parse(&url_value).map_err(|e| format!("Invalid URL: {}", e))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err("Only http/https URLs are supported".to_string());
+            }
+            if is_forbidden_loopback_host(&parsed) {
+                return Err("Local/private hosts are not allowed".to_string());
+            }
+            (
+                "url".to_string(),
+                parsed.to_string(),
+                parsed.to_string(),
+                Value::Null,
+            )
+        }
+    } else {
+        return Err("Either 'path' or 'url' is required".to_string());
+    };
+
+    let response = llm_service
+        .chat_with_image_url(&model, &prompt, &image_url, enable_thinking)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "model": model,
+        "source_kind": source_kind,
+        "source": source,
+        "prompt": prompt,
+        "thinking": enable_thinking,
+        "metadata": metadata,
+        "response": response
+    }))
 }

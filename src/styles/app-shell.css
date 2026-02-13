@@ -249,12 +249,16 @@ label {
   gap: 8px;
 }
 
+.conv-item-row {
+  position: relative;
+}
+
 .conv-item {
   width: 100%;
   border: none;
   background: transparent;
   border-radius: 18px;
-  padding: 12px;
+  padding: 12px 42px 12px 12px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -296,6 +300,46 @@ label {
 
 .conv-item.active .material-icons-round {
   color: #4a7c59;
+}
+
+.conv-delete-btn {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #b8b2ac;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+.conv-delete-btn .material-icons-round {
+  font-size: 16px;
+}
+
+.conv-item-row:hover .conv-delete-btn,
+.conv-item-row:focus-within .conv-delete-btn,
+.conv-item-row.active .conv-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conv-delete-btn:hover:not(:disabled) {
+  background: #fcebea;
+  color: #c2410c;
+}
+
+.conv-delete-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .empty-tip {

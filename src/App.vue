@@ -51,17 +51,32 @@
         <div class="sidebar-title">进行中</div>
 
         <div class="conversation-list no-scrollbar">
-          <button
+          <div
             v-for="(conv, index) in chatStore.conversations"
             :key="conv.id"
-            class="conv-item"
+            class="conv-item-row"
             :class="{ active: conv.id === chatStore.currentConversationId }"
-            @click="handleSelectConversation(conv.id)"
           >
-            <span class="dot"></span>
-            <span class="material-icons-round">{{ getConversationIcon(index) }}</span>
-            <span class="conv-title">{{ conv.title }}</span>
-          </button>
+            <button
+              class="conv-item"
+              :class="{ active: conv.id === chatStore.currentConversationId }"
+              @click="handleSelectConversation(conv.id)"
+            >
+              <span class="dot"></span>
+              <span class="material-icons-round">{{ getConversationIcon(index) }}</span>
+              <span class="conv-title">{{ conv.title }}</span>
+            </button>
+            <button
+              class="conv-delete-btn"
+              type="button"
+              title="删除会话"
+              aria-label="删除会话"
+              :disabled="chatStore.streaming && conv.id === chatStore.currentConversationId"
+              @click.stop="handleDeleteConversation(conv.id)"
+            >
+              <span class="material-icons-round">delete</span>
+            </button>
+          </div>
 
           <div v-if="chatStore.conversations.length === 0" class="empty-tip">还没有任务，先创建一个吧。</div>
         </div>
@@ -350,7 +365,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -991,6 +1006,53 @@ async function handleSelectConversation(id: string) {
   pendingToolApproval.value = null
   resolvingToolApproval.value = false
   createDialogVisible.value = false
+}
+
+async function handleDeleteConversation(id: string) {
+  const targetConversation = chatStore.conversations.find((item) => item.id === id)
+  if (!targetConversation) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${targetConversation.title}」吗？该操作不可撤销。`,
+      '删除会话',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  const deletingCurrentConversation = chatStore.currentConversationId === id
+  const fallbackConversationId = deletingCurrentConversation
+    ? (chatStore.conversations.find((item) => item.id !== id)?.id ?? null)
+    : chatStore.currentConversationId
+
+  try {
+    await chatStore.deleteConversation(id)
+    await persistConversationWorkspaceDirectory(id, null)
+
+    if (chatStore.conversations.length === 0) {
+      chatStore.setCurrentConversation(null)
+      await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
+      chatStore.streaming = false
+      activeAssistantMessageId.value = null
+      toolStreamItems.value = []
+      pendingToolApproval.value = null
+      resolvingToolApproval.value = false
+      createDialogVisible.value = true
+      return
+    }
+
+    if (deletingCurrentConversation && fallbackConversationId) {
+      await handleSelectConversation(fallbackConversationId)
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, '删除会话失败'))
+  }
 }
 
 async function resolveToolApproval(decision: 'allow_once' | 'allow_always' | 'deny') {

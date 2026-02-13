@@ -27,6 +27,7 @@ async-trait = "0.1"
 regex = "1"
 globset = "0.4"
 walkdir = "2"
+base64 = "0.22"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"

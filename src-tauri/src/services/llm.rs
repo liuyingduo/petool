@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const DEFAULT_API_BASE: &str = "https://open.bigmodel.cn/api/paas/v4";
@@ -138,6 +139,33 @@ fn append_with_overlap(base: &mut String, chunk: &str) {
         }
     }
     base.push_str(chunk);
+}
+
+fn extract_assistant_content_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+
+    let parts = content.as_array()?;
+    let merged = parts
+        .iter()
+        .filter_map(|part| {
+            let part_type = part.get("type").and_then(Value::as_str)?;
+            if part_type != "text" {
+                return None;
+            }
+            part.get("text")
+                .and_then(Value::as_str)
+                .map(|text| text.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
 }
 
 pub struct LlmService {
@@ -336,5 +364,64 @@ impl LlmService {
             reasoning,
             tool_calls,
         })
+    }
+
+    pub async fn chat_with_image_url(
+        &self,
+        model: &str,
+        prompt: &str,
+        image_url: &str,
+        enable_thinking: bool,
+    ) -> Result<String> {
+        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+
+        let mut request = json!({
+            "model": model,
+            "stream": false,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_url
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
+        });
+
+        if enable_thinking {
+            request["thinking"] = json!({
+                "type": "enabled"
+            });
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            return Err(anyhow!("API error: {}", error));
+        }
+
+        let response_json: Value = response.json().await?;
+        let content = response_json
+            .pointer("/choices/0/message/content")
+            .and_then(extract_assistant_content_text)
+            .unwrap_or_default();
+
+        Ok(content)
     }
 }

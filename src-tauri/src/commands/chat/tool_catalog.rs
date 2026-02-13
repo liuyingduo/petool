@@ -5,14 +5,14 @@ use serde_json::{json, Value};
 
 use super::{
     ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL, BROWSER_TOOL,
-    CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL,
-    SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL,
-    SKILL_LIST_TOOL, TODO_READ_TOOL, TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL,
-    WORKSPACE_APPLY_PATCH_TOOL, WORKSPACE_CODESEARCH_TOOL, WORKSPACE_EDIT_TOOL,
-    WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL, WORKSPACE_LIST_TOOL, WORKSPACE_LSP_SYMBOLS_TOOL,
-    WORKSPACE_PROCESS_LIST_TOOL, WORKSPACE_PROCESS_READ_TOOL, WORKSPACE_PROCESS_START_TOOL,
-    WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL,
-    WORKSPACE_WRITE_TOOL,
+    CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, IMAGE_UNDERSTAND_TOOL,
+    SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL, SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL,
+    SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL, TODO_WRITE_TOOL,
+    WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL, WORKSPACE_CODESEARCH_TOOL,
+    WORKSPACE_EDIT_TOOL, WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL, WORKSPACE_LIST_TOOL,
+    WORKSPACE_LSP_SYMBOLS_TOOL, WORKSPACE_PROCESS_LIST_TOOL, WORKSPACE_PROCESS_READ_TOOL,
+    WORKSPACE_PROCESS_START_TOOL, WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL,
+    WORKSPACE_RUN_TOOL, WORKSPACE_WRITE_TOOL,
 };
 
 fn register_runtime_tool(
@@ -489,7 +489,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace).".to_string(),
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). For reliable clicking/typing: call action=snapshot first, then pass params.ref into action=act (kind=click/type). snapshot supports params.max_refs to reduce noise.".to_string(),
         json!({
             "type": "object",
             "properties": {
@@ -536,6 +536,27 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
             }
         }),
         RuntimeTool::ImageProbe,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        IMAGE_UNDERSTAND_TOOL,
+        "Analyze an image with a vision model using a prompt. Supports workspace path or public URL."
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "Question or instruction for the image." },
+                "path": { "type": "string", "description": "Workspace-relative or absolute path inside workspace root." },
+                "url": { "type": "string", "description": "Public http/https URL or data:image/... URL." },
+                "model": { "type": "string", "description": "Vision model name. Default glm-4.6v." },
+                "thinking": { "type": "boolean", "description": "Enable model thinking mode when supported." },
+                "max_bytes": { "type": "integer", "description": "Max local image bytes. Default 4MB, max 8MB." }
+            },
+            "required": ["prompt"]
+        }),
+        RuntimeTool::ImageUnderstand,
     );
 
     register_runtime_tool(

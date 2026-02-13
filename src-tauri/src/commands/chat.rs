@@ -137,6 +137,7 @@ const WEB_SEARCH_TOOL: &str = "web_search";
 const BROWSER_TOOL: &str = "browser";
 const BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
 const IMAGE_PROBE_TOOL: &str = "image_probe";
+const IMAGE_UNDERSTAND_TOOL: &str = "image_understand";
 const SESSIONS_LIST_TOOL: &str = "sessions_list";
 const SESSIONS_HISTORY_TOOL: &str = "sessions_history";
 const SESSIONS_SEND_TOOL: &str = "sessions_send";
@@ -180,6 +181,7 @@ enum RuntimeTool {
     Browser,
     BrowserNavigate,
     ImageProbe,
+    ImageUnderstand,
     SessionsList,
     SessionsHistory,
     SessionsSend,
@@ -866,6 +868,7 @@ fn should_auto_allow_batch_tool(tool_name: &str) -> bool {
             | WEB_FETCH_TOOL
             | WEB_SEARCH_TOOL
             | IMAGE_PROBE_TOOL
+            | IMAGE_UNDERSTAND_TOOL
             | SESSIONS_LIST_TOOL
             | SESSIONS_HISTORY_TOOL
             | AGENTS_LIST_TOOL
@@ -1858,6 +1861,14 @@ async fn execute_browser_navigate(arguments: &Value) -> Result<Value, String> {
 async fn execute_image_probe(arguments: &Value, workspace_root: &Path) -> Result<Value, String> {
     image_tools::execute_image_probe(arguments, workspace_root).await
 }
+
+async fn execute_image_understand(
+    arguments: &Value,
+    workspace_root: &Path,
+    llm_service: &LlmService,
+) -> Result<Value, String> {
+    image_tools::execute_image_understand(arguments, workspace_root, llm_service).await
+}
 async fn execute_workspace_process_start(
     arguments: &Value,
     workspace_root: &Path,
@@ -2143,6 +2154,7 @@ async fn execute_core_batch_safe_tool(
     conversation_id: &str,
     skill_manager_state: &SkillManagerState,
     pool: &SqlitePool,
+    llm_service: &LlmService,
 ) -> Result<Value, String> {
     match tool_name {
         WORKSPACE_LIST_TOOL => execute_workspace_list_directory(arguments, workspace_root),
@@ -2158,6 +2170,9 @@ async fn execute_core_batch_safe_tool(
         BROWSER_TOOL => execute_browser(arguments).await,
         BROWSER_NAVIGATE_TOOL => execute_browser_navigate(arguments).await,
         IMAGE_PROBE_TOOL => execute_image_probe(arguments, workspace_root).await,
+        IMAGE_UNDERSTAND_TOOL => {
+            execute_image_understand(arguments, workspace_root, llm_service).await
+        }
         SESSIONS_LIST_TOOL => execute_sessions_list(arguments, pool).await,
         SESSIONS_HISTORY_TOOL => execute_sessions_history(arguments, pool).await,
         AGENTS_LIST_TOOL => execute_agents_list(),
@@ -2172,6 +2187,7 @@ async fn execute_core_batch(
     conversation_id: &str,
     skill_manager_state: &SkillManagerState,
     pool: &SqlitePool,
+    llm_service: &LlmService,
 ) -> Result<Value, String> {
     let calls = arguments
         .get("tool_calls")
@@ -2208,6 +2224,7 @@ async fn execute_core_batch(
             conversation_id,
             skill_manager_state,
             pool,
+            llm_service,
         )
         .await
         {
@@ -2306,6 +2323,7 @@ async fn execute_runtime_tool(
                 conversation_id,
                 skill_manager_state,
                 pool,
+                llm_service,
             )
             .await
         }
@@ -2317,6 +2335,9 @@ async fn execute_runtime_tool(
         RuntimeTool::Browser => execute_browser(arguments).await,
         RuntimeTool::BrowserNavigate => execute_browser_navigate(arguments).await,
         RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
+        RuntimeTool::ImageUnderstand => {
+            execute_image_understand(arguments, workspace_root, llm_service).await
+        }
         RuntimeTool::SessionsList => execute_sessions_list(arguments, pool).await,
         RuntimeTool::SessionsHistory => execute_sessions_history(arguments, pool).await,
         RuntimeTool::SessionsSend => {

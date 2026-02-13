@@ -8,6 +8,10 @@ const runtime = {
   profiles: new Map()
 }
 
+const SNAPSHOT_MARKER_ATTR = 'data-petool-ref'
+const DEFAULT_SNAPSHOT_MAX_REFS = 120
+const MAX_SNAPSHOT_MAX_REFS = 500
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -384,23 +388,326 @@ function extractPageLinks(html, baseUrl, maxLinks = 30) {
   return links
 }
 
-function normalizeSnapshotRows(rows) {
+function clampInteger(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  const integer = Math.trunc(value)
+  if (integer < min) return min
+  if (integer > max) return max
+  return integer
+}
+
+function sanitizeActTimeout(timeoutValue, fallback = 2500) {
+  return clampInteger(Number(timeoutValue), 250, 20_000, fallback)
+}
+
+function uniqueStrings(values) {
+  const seen = new Set()
   const result = []
-  let index = 1
-  for (const row of rows) {
-    result.push({
-      ref: `e${index++}`,
-      role: row.role || row.tag || 'element',
-      text: row.text || '',
-      selector: row.selector
-    })
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    if (seen.has(trimmed)) continue
+    seen.add(trimmed)
+    result.push(trimmed)
   }
   return result
 }
 
+function compactSnapshotEntry(row) {
+  return {
+    ref: row.ref,
+    role: row.role || row.tag || 'element',
+    tag: row.tag || null,
+    type: row.type || null,
+    name: row.name || '',
+    text: row.text || '',
+    selector: row.selector,
+    bbox: row.bbox || null,
+    in_viewport: Boolean(row.in_viewport),
+    disabled: Boolean(row.disabled)
+  }
+}
+
+function resolveRefEntry(state, targetId, ref) {
+  const map = state.refsByTarget.get(targetId)
+  if (!map) return null
+  return map.get(ref) || null
+}
+
+function selectorCandidatesFromRef(selector, refEntry) {
+  const selectors = []
+  if (typeof selector === 'string' && selector.trim()) {
+    selectors.push(selector.trim())
+  }
+  if (!refEntry) return uniqueStrings(selectors)
+  if (typeof refEntry === 'string') {
+    selectors.push(refEntry)
+    return uniqueStrings(selectors)
+  }
+  if (typeof refEntry.selector === 'string') {
+    selectors.push(refEntry.selector)
+  }
+  if (Array.isArray(refEntry.fallback_selectors)) {
+    selectors.push(...refEntry.fallback_selectors)
+  }
+  return uniqueStrings(selectors)
+}
+
+function roleHintForLocator(refEntry) {
+  if (!refEntry || typeof refEntry !== 'object') return null
+  const role = typeof refEntry.role === 'string' ? refEntry.role.toLowerCase() : ''
+  const tag = typeof refEntry.tag === 'string' ? refEntry.tag.toLowerCase() : ''
+  const type = typeof refEntry.type === 'string' ? refEntry.type.toLowerCase() : ''
+  const supported = new Set([
+    'button',
+    'link',
+    'checkbox',
+    'radio',
+    'textbox',
+    'combobox',
+    'option',
+    'tab',
+    'menuitem',
+    'switch',
+    'searchbox'
+  ])
+  if (supported.has(role)) return role
+  if (tag === 'a') return 'link'
+  if (tag === 'button') return 'button'
+  if (tag === 'select') return 'combobox'
+  if (tag === 'textarea') return 'textbox'
+  if (tag === 'input') {
+    if (type === 'checkbox') return 'checkbox'
+    if (type === 'radio') return 'radio'
+    if (type === 'search') return 'searchbox'
+    if (['button', 'submit', 'reset'].includes(type)) return 'button'
+    return 'textbox'
+  }
+  return null
+}
+
+async function clickLocator(locator, params, timeoutMs) {
+  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+  await locator.click({
+    button: typeof params.button === 'string' ? params.button : 'left',
+    clickCount: params.double ? 2 : 1,
+    timeout: timeoutMs
+  })
+}
+
+async function typeLocator(locator, params, timeoutMs) {
+  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+  if (params.replace !== false) {
+    await locator.fill(String(params.text || ''), { timeout: timeoutMs })
+  } else {
+    await locator.type(String(params.text || ''), { timeout: timeoutMs })
+  }
+}
+
+async function robustClick(page, selectors, refEntry, params) {
+  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+  const attempts = []
+
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first()
+      await clickLocator(locator, params, timeoutMs)
+      return { method: 'selector', selector, attempts }
+    } catch (error) {
+      attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  const nameHint = typeof refEntry?.name === 'string' && refEntry.name.trim()
+    ? refEntry.name.trim()
+    : (typeof refEntry?.text === 'string' ? refEntry.text.trim() : '')
+  const roleHint = roleHintForLocator(refEntry)
+
+  if (roleHint && nameHint) {
+    try {
+      await clickLocator(page.getByRole(roleHint, { name: nameHint, exact: false }).first(), params, timeoutMs)
+      return { method: 'role_name', role: roleHint, name: nameHint, attempts }
+    } catch (error) {
+      attempts.push(`role:${roleHint}(${nameHint}) => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  if (nameHint) {
+    try {
+      await clickLocator(page.getByLabel(nameHint, { exact: false }).first(), params, timeoutMs)
+      return { method: 'label', label: nameHint, attempts }
+    } catch (error) {
+      attempts.push(`label:${nameHint} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  if (typeof refEntry?.placeholder === 'string' && refEntry.placeholder.trim()) {
+    try {
+      await clickLocator(
+        page.getByPlaceholder(refEntry.placeholder.trim(), { exact: false }).first(),
+        params,
+        timeoutMs
+      )
+      return { method: 'placeholder', placeholder: refEntry.placeholder.trim(), attempts }
+    } catch (error) {
+      attempts.push(`placeholder:${refEntry.placeholder.trim()} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  const textHint = typeof refEntry?.text === 'string' ? refEntry.text.trim() : ''
+  if (textHint && textHint.length <= 120) {
+    try {
+      await clickLocator(page.getByText(textHint, { exact: false }).first(), params, timeoutMs)
+      return { method: 'text', text: textHint, attempts }
+    } catch (error) {
+      attempts.push(`text:${textHint} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  if (refEntry?.bbox && Number.isFinite(refEntry.bbox.y)) {
+    try {
+      await page.evaluate((y) => {
+        const target = Math.max(0, Number(y) - window.innerHeight * 0.35)
+        window.scrollTo({ top: target, behavior: 'auto' })
+      }, refEntry.bbox.y)
+      const viewport = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+      const rawX = Number(refEntry.bbox.cx ?? (refEntry.bbox.x + refEntry.bbox.width / 2))
+      const rawY = Number(refEntry.bbox.cy ?? (refEntry.bbox.y + refEntry.bbox.height / 2))
+      const x = Math.max(1, Math.min(Math.max(1, viewport.w - 1), rawX))
+      const y = Math.max(1, Math.min(Math.max(1, viewport.h - 1), rawY))
+      await page.mouse.click(x, y, {
+        button: typeof params.button === 'string' ? params.button : 'left',
+        clickCount: params.double ? 2 : 1
+      })
+      return { method: 'coordinates', x, y, attempts }
+    } catch (error) {
+      attempts.push(`coordinates => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  for (const selector of selectors) {
+    try {
+      const clicked = await page.evaluate((candidate) => {
+        try {
+          const element = document.querySelector(candidate)
+          if (!element) return false
+          element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' })
+          if (typeof element.click === 'function') {
+            element.click()
+            return true
+          }
+          element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+          return true
+        } catch {
+          return false
+        }
+      }, selector)
+      if (clicked) {
+        return { method: 'dom_click', selector, attempts }
+      }
+      attempts.push(`dom_click:${selector} => element_not_found`)
+    } catch (error) {
+      attempts.push(`dom_click:${selector} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  const lastErrors = attempts.slice(-6).join(' | ')
+  throw new Error(`act.click failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
+}
+
+async function robustType(page, selectors, refEntry, params) {
+  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+  const attempts = []
+
+  for (const selector of selectors) {
+    try {
+      await typeLocator(page.locator(selector).first(), params, timeoutMs)
+      if (params.submit) {
+        await page.keyboard.press('Enter')
+      }
+      return { method: 'selector', selector, attempts }
+    } catch (error) {
+      attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  const nameHint = typeof refEntry?.name === 'string' ? refEntry.name.trim() : ''
+  if (nameHint) {
+    try {
+      await typeLocator(page.getByLabel(nameHint, { exact: false }).first(), params, timeoutMs)
+      if (params.submit) {
+        await page.keyboard.press('Enter')
+      }
+      return { method: 'label', label: nameHint, attempts }
+    } catch (error) {
+      attempts.push(`label:${nameHint} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  if (typeof refEntry?.placeholder === 'string' && refEntry.placeholder.trim()) {
+    try {
+      await typeLocator(page.getByPlaceholder(refEntry.placeholder.trim(), { exact: false }).first(), params, timeoutMs)
+      if (params.submit) {
+        await page.keyboard.press('Enter')
+      }
+      return { method: 'placeholder', placeholder: refEntry.placeholder.trim(), attempts }
+    } catch (error) {
+      attempts.push(`placeholder:${refEntry.placeholder.trim()} => ${makeErrorMessage(error)}`)
+    }
+  }
+
+  const lastErrors = attempts.slice(-6).join(' | ')
+  throw new Error(`act.type failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
+}
+
+async function robustHover(page, selectors, params) {
+  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+  const attempts = []
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first()
+      await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+      await locator.hover({ timeout: timeoutMs })
+      return { method: 'selector', selector, attempts }
+    } catch (error) {
+      attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
+    }
+  }
+  const lastErrors = attempts.slice(-6).join(' | ')
+  throw new Error(`act.hover failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
+}
+
+async function robustSelect(page, selectors, params) {
+  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+  const attempts = []
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first()
+      await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+      await locator.selectOption(params.values || params.value || [], { timeout: timeoutMs })
+      return { method: 'selector', selector, attempts }
+    } catch (error) {
+      attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
+    }
+  }
+  const lastErrors = attempts.slice(-6).join(' | ')
+  throw new Error(`act.select failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
+}
+
 async function buildSnapshot(state, request) {
   const { page, targetId } = resolvePage(state, request)
-  const snapshotRows = await page.evaluate(() => {
+  const maxRefs = clampInteger(
+    Number(request.params?.max_refs),
+    20,
+    MAX_SNAPSHOT_MAX_REFS,
+    DEFAULT_SNAPSHOT_MAX_REFS
+  )
+  const snapshotResult = await page.evaluate(({ markerAttr, maxRefs }) => {
+    function normalizeText(value, limit = 160) {
+      return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
+    }
+
     function cssPath(el) {
       if (!(el instanceof Element)) return null
       const parts = []
@@ -428,46 +735,253 @@ async function buildSnapshot(state, request) {
       return parts.join(' > ')
     }
 
+    function attrSelector(attrName, attrValue, tagName = '') {
+      if (!attrValue) return null
+      const escaped = String(attrValue)
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+      return `${tagName || ''}[${attrName}="${escaped}"]`
+    }
+
+    function isSelectorUnique(selector, element) {
+      if (!selector) return false
+      try {
+        const matches = document.querySelectorAll(selector)
+        return matches.length === 1 && matches[0] === element
+      } catch {
+        return false
+      }
+    }
+
+    function inferRole(tag, explicitRole, type) {
+      if (explicitRole) return explicitRole
+      if (tag === 'a') return 'link'
+      if (tag === 'button') return 'button'
+      if (tag === 'select') return 'combobox'
+      if (tag === 'textarea') return 'textbox'
+      if (tag === 'input') {
+        if (type === 'checkbox') return 'checkbox'
+        if (type === 'radio') return 'radio'
+        if (type === 'search') return 'searchbox'
+        if (['button', 'submit', 'reset'].includes(type)) return 'button'
+        return 'textbox'
+      }
+      return tag
+    }
+
+    function isInteractiveRole(role) {
+      return new Set([
+        'button',
+        'link',
+        'menuitem',
+        'option',
+        'radio',
+        'checkbox',
+        'tab',
+        'textbox',
+        'combobox',
+        'searchbox',
+        'switch'
+      ]).has(role)
+    }
+
+    function isInteractiveTag(tag) {
+      return new Set([
+        'a',
+        'button',
+        'input',
+        'textarea',
+        'select',
+        'summary',
+        'option'
+      ]).has(tag)
+    }
+
     function isVisible(el) {
       const style = getComputedStyle(el)
       if (style.display === 'none' || style.visibility === 'hidden') return false
+      if (Number(style.opacity || '1') <= 0) return false
+      if (style.pointerEvents === 'none') return false
       const rect = el.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0
+      if (rect.width < 2 || rect.height < 2) return false
+      if (rect.right < 0 || rect.bottom < 0) return false
+      if (rect.left > window.innerWidth || rect.top > window.innerHeight) return false
+      return true
     }
 
-    const candidates = Array.from(
-      document.querySelectorAll('a,button,input,textarea,select,[role],summary,[tabindex],[onclick]')
-    )
-      .filter((el) => isVisible(el))
-      .slice(0, 300)
+    document.querySelectorAll(`[${markerAttr}]`).forEach((node) => node.removeAttribute(markerAttr))
 
-    return candidates.map((el) => ({
-      selector: cssPath(el),
-      role: el.getAttribute('role') || el.tagName.toLowerCase(),
-      tag: el.tagName.toLowerCase(),
-      text: (el.innerText || el.textContent || '').trim().slice(0, 160)
-    }))
-  })
+    const rawCandidates = Array.from(
+      document.querySelectorAll(
+        'a,button,input,textarea,select,summary,label,[role],[tabindex],[onclick],[aria-label],[data-testid],[contenteditable=""],[contenteditable="true"]'
+      )
+    ).slice(0, 1500)
 
-  const refs = normalizeSnapshotRows(snapshotRows)
-  const refMap = new Map(refs.map((row) => [row.ref, row.selector]))
+    const entries = []
+    for (const el of rawCandidates) {
+      if (!(el instanceof HTMLElement)) continue
+      const tag = el.tagName.toLowerCase()
+      const type = tag === 'input'
+        ? String(el.getAttribute('type') || 'text').toLowerCase()
+        : null
+      if (tag === 'input' && type === 'hidden') continue
+      if (!isVisible(el)) continue
+
+      const explicitRole = (el.getAttribute('role') || '').toLowerCase()
+      const role = inferRole(tag, explicitRole, type)
+      const style = getComputedStyle(el)
+      const rect = el.getBoundingClientRect()
+      const text = normalizeText(el.innerText || el.textContent || '')
+      const placeholder = normalizeText(el.getAttribute('placeholder') || '', 80)
+      const ariaLabel = normalizeText(el.getAttribute('aria-label') || '', 120)
+      const title = normalizeText(el.getAttribute('title') || '', 120)
+      let label = ariaLabel || placeholder || title
+      if (!label && tag === 'input') {
+        try {
+          const firstLabel = el.labels && el.labels.length > 0 ? el.labels[0] : null
+          if (firstLabel) {
+            label = normalizeText(firstLabel.innerText || firstLabel.textContent || '', 120)
+          }
+        } catch {
+          // ignore label resolution failures
+        }
+      }
+      if (!label) {
+        label = text
+      }
+      const inViewport = rect.left < window.innerWidth &&
+        rect.right > 0 &&
+        rect.top < window.innerHeight &&
+        rect.bottom > 0
+      const disabled = el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'
+      const hasInteractiveAttr = el.hasAttribute('onclick') ||
+        el.hasAttribute('tabindex') ||
+        el.getAttribute('contenteditable') === 'true' ||
+        el.getAttribute('contenteditable') === ''
+      const hasPointerCursor = style.cursor === 'pointer'
+      const interactive = isInteractiveTag(tag) || isInteractiveRole(role) || hasInteractiveAttr || hasPointerCursor
+      if (!interactive) continue
+
+      const fallbackSelectors = []
+      const idValue = el.getAttribute('id')
+      if (idValue) {
+        const idSelector = `#${CSS.escape(idValue)}`
+        if (isSelectorUnique(idSelector, el)) fallbackSelectors.push(idSelector)
+      }
+      const dataTestId = el.getAttribute('data-testid')
+      if (dataTestId) {
+        const selector = attrSelector('data-testid', dataTestId)
+        if (selector && isSelectorUnique(selector, el)) fallbackSelectors.push(selector)
+      }
+      const nameAttr = el.getAttribute('name')
+      if (nameAttr) {
+        const selector = attrSelector('name', nameAttr, tag)
+        if (selector && isSelectorUnique(selector, el)) fallbackSelectors.push(selector)
+      }
+      if (ariaLabel) {
+        const selector = attrSelector('aria-label', ariaLabel, tag)
+        if (selector && isSelectorUnique(selector, el)) fallbackSelectors.push(selector)
+      }
+      const structuralSelector = cssPath(el)
+      if (structuralSelector) fallbackSelectors.push(structuralSelector)
+
+      let score = 0
+      if (inViewport) score += 20
+      if (isInteractiveTag(tag)) score += 12
+      if (isInteractiveRole(role)) score += 8
+      if (hasPointerCursor) score += 4
+      if (label) score += Math.min(6, Math.ceil(label.length / 24))
+      if (disabled) score -= 40
+      score += Math.min(8, Math.floor((rect.width * rect.height) / 4000))
+
+      entries.push({
+        element: el,
+        score,
+        role,
+        tag,
+        type,
+        text,
+        name: label,
+        placeholder,
+        in_viewport: inViewport,
+        disabled,
+        bbox: {
+          x: Number(rect.left.toFixed(1)),
+          y: Number(rect.top.toFixed(1)),
+          width: Number(rect.width.toFixed(1)),
+          height: Number(rect.height.toFixed(1)),
+          cx: Number((rect.left + rect.width / 2).toFixed(1)),
+          cy: Number((rect.top + rect.height / 2).toFixed(1))
+        },
+        fallback_selectors: fallbackSelectors
+      })
+    }
+
+    entries.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      if (a.in_viewport !== b.in_viewport) return a.in_viewport ? -1 : 1
+      if (a.bbox.y !== b.bbox.y) return a.bbox.y - b.bbox.y
+      return a.bbox.x - b.bbox.x
+    })
+
+    const selected = entries.slice(0, maxRefs)
+    const rows = selected.map((entry, index) => {
+      const ref = `e${index + 1}`
+      entry.element.setAttribute(markerAttr, ref)
+      const selector = `[${markerAttr}="${ref}"]`
+      return {
+        ref,
+        role: entry.role,
+        tag: entry.tag,
+        type: entry.type,
+        name: entry.name,
+        text: entry.text,
+        placeholder: entry.placeholder,
+        selector,
+        fallback_selectors: Array.from(new Set([selector, ...entry.fallback_selectors])).slice(0, 6),
+        bbox: entry.bbox,
+        in_viewport: entry.in_viewport,
+        disabled: entry.disabled
+      }
+    })
+
+    return {
+      rows,
+      stats: {
+        total_candidates: entries.length,
+        viewport_count: entries.filter((entry) => entry.in_viewport).length,
+        selected_count: rows.length
+      }
+    }
+  }, { markerAttr: SNAPSHOT_MARKER_ATTR, maxRefs })
+
+  const refs = snapshotResult.rows || []
+  const refMap = new Map(refs.map((row) => [row.ref, row]))
   state.refsByTarget.set(targetId, refMap)
 
   return {
     target_id: targetId,
     url: page.url(),
     title: await page.title().catch(() => ''),
-    refs,
+    refs: refs.map(compactSnapshotEntry),
     stats: {
-      count: refs.length
+      count: refs.length,
+      total_candidates: snapshotResult.stats?.total_candidates || refs.length,
+      viewport_count: snapshotResult.stats?.viewport_count || refs.length
     }
   }
 }
 
 function resolveSelectorFromRef(state, targetId, ref) {
-  const map = state.refsByTarget.get(targetId)
-  if (!map) return null
-  return map.get(ref) || null
+  const entry = resolveRefEntry(state, targetId, ref)
+  if (!entry) return null
+  if (typeof entry === 'string') return entry
+  if (typeof entry.selector === 'string' && entry.selector.trim()) return entry.selector
+  if (Array.isArray(entry.fallback_selectors)) {
+    const first = entry.fallback_selectors.find((value) => typeof value === 'string' && value.trim())
+    return first || null
+  }
+  return null
 }
 
 async function executeAct(state, request) {
@@ -477,37 +991,53 @@ async function executeAct(state, request) {
   if (!kind) throw new Error('act.kind is required')
 
   const ref = typeof params.ref === 'string' ? params.ref : null
-  const selector = typeof params.selector === 'string'
-    ? params.selector
-    : (ref ? resolveSelectorFromRef(state, targetId, ref) : null)
+  const selector = typeof params.selector === 'string' ? params.selector : null
+  const refEntry = ref ? resolveRefEntry(state, targetId, ref) : null
+  if (ref && !selector && !refEntry) {
+    throw new Error(`Unknown ref "${ref}". Call browser action=snapshot to refresh refs.`)
+  }
+  const selectorCandidates = selectorCandidatesFromRef(selector, refEntry)
+  const primarySelector = selectorCandidates[0] || null
 
   switch (kind) {
-    case 'click':
-      if (!selector) throw new Error('act.click requires ref or selector')
-      await page.click(selector, {
-        button: typeof params.button === 'string' ? params.button : 'left',
-        clickCount: params.double ? 2 : 1,
-        timeout: Number.isInteger(params.timeout_ms) ? params.timeout_ms : undefined
-      })
-      return { ok: true, action: 'click', target_id: targetId, selector }
+    case 'click': {
+      if (selectorCandidates.length === 0) throw new Error('act.click requires ref or selector')
+      const detail = await robustClick(page, selectorCandidates, refEntry, params)
+      return {
+        ok: true,
+        action: 'click',
+        target_id: targetId,
+        selector: detail.selector || primarySelector,
+        method: detail.method
+      }
+    }
     case 'type':
-      if (!selector) throw new Error('act.type requires ref or selector')
-      if (params.replace !== false) {
-        await page.fill(selector, String(params.text || ''))
-      } else {
-        await page.type(selector, String(params.text || ''))
+      if (selectorCandidates.length === 0) throw new Error('act.type requires ref or selector')
+      {
+        const detail = await robustType(page, selectorCandidates, refEntry, params)
+        return {
+          ok: true,
+          action: 'type',
+          target_id: targetId,
+          selector: detail.selector || primarySelector,
+          method: detail.method
+        }
       }
-      if (params.submit) {
-        await page.keyboard.press('Enter')
-      }
-      return { ok: true, action: 'type', target_id: targetId, selector }
     case 'press':
       await page.keyboard.press(String(params.key || 'Enter'))
       return { ok: true, action: 'press', target_id: targetId }
     case 'hover':
-      if (!selector) throw new Error('act.hover requires ref or selector')
-      await page.hover(selector)
-      return { ok: true, action: 'hover', target_id: targetId, selector }
+      if (selectorCandidates.length === 0) throw new Error('act.hover requires ref or selector')
+      {
+        const detail = await robustHover(page, selectorCandidates, params)
+        return {
+          ok: true,
+          action: 'hover',
+          target_id: targetId,
+          selector: detail.selector || primarySelector,
+          method: detail.method
+        }
+      }
     case 'scroll':
       await page.evaluate(
         ({ x, y }) => window.scrollBy(Number(x) || 0, Number(y) || 0),
@@ -515,9 +1045,17 @@ async function executeAct(state, request) {
       )
       return { ok: true, action: 'scroll', target_id: targetId }
     case 'select':
-      if (!selector) throw new Error('act.select requires ref or selector')
-      await page.selectOption(selector, params.values || params.value || [])
-      return { ok: true, action: 'select', target_id: targetId, selector }
+      if (selectorCandidates.length === 0) throw new Error('act.select requires ref or selector')
+      {
+        const detail = await robustSelect(page, selectorCandidates, params)
+        return {
+          ok: true,
+          action: 'select',
+          target_id: targetId,
+          selector: detail.selector || primarySelector,
+          method: detail.method
+        }
+      }
     case 'wait':
       if (params.selector) {
         await page.waitForSelector(String(params.selector), {
