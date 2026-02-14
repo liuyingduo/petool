@@ -11,6 +11,13 @@ const runtime = {
 const SNAPSHOT_MARKER_ATTR = 'data-petool-ref'
 const DEFAULT_SNAPSHOT_MAX_REFS = 120
 const MAX_SNAPSHOT_MAX_REFS = 500
+const DEFAULT_COMPACT_SNAPSHOT_REFS = 80
+const PAGE_READY_LOADING_TIMEOUT_MS = 800
+const PAGE_READY_NETWORK_IDLE_TIMEOUT_MS = 700
+const PAGE_READY_NETWORK_IDLE_STABLE_MS = 120
+const PAGE_READY_DOM_STABLE_MS = 180
+const PAGE_READY_DOM_STABILITY_TIMEOUT_MS = 900
+const TARGET_READY_TTL_MS = 15_000
 
 function nowIso() {
   return new Date().toISOString()
@@ -114,6 +121,7 @@ function getProfileState(profile) {
       errors: [],
       requests: [],
       responseBodies: [],
+      captureResponseBodies: false,
       headers: undefined,
       credentials: undefined,
       geolocation: undefined,
@@ -121,6 +129,8 @@ function getProfileState(profile) {
       timezone: undefined,
       locale: undefined,
       device: undefined,
+      pendingReadyTargets: new Map(),
+      inflightRequestsByTarget: new Map(),
       traceStarted: false,
       tracePath: null
     }
@@ -133,6 +143,8 @@ function clearProfilePages(state) {
   state.pages.clear()
   state.pageIds.clear()
   state.refsByTarget.clear()
+  state.pendingReadyTargets.clear()
+  state.inflightRequestsByTarget.clear()
   state.activeTargetId = null
 }
 
@@ -160,6 +172,12 @@ async function attachExistingBrowserViaCdp(profileConfig, state) {
 }
 
 function attachPageListeners(state, page, targetId) {
+  const bumpInflight = (delta) => {
+    const current = Number(state.inflightRequestsByTarget.get(targetId) || 0)
+    const next = Math.max(0, current + delta)
+    state.inflightRequestsByTarget.set(targetId, next)
+  }
+
   page.on('console', (msg) => {
     pushLimited(state.consoleMessages, {
       level: msg.type(),
@@ -178,6 +196,7 @@ function attachPageListeners(state, page, targetId) {
   })
 
   page.on('request', (request) => {
+    bumpInflight(1)
     pushLimited(state.requests, {
       url: request.url(),
       method: request.method(),
@@ -187,7 +206,16 @@ function attachPageListeners(state, page, targetId) {
     })
   })
 
+  page.on('requestfinished', () => {
+    bumpInflight(-1)
+  })
+
+  page.on('requestfailed', () => {
+    bumpInflight(-1)
+  })
+
   page.on('response', async (response) => {
+    if (!state.captureResponseBodies) return
     try {
       const request = response.request()
       const url = response.url()
@@ -216,6 +244,8 @@ function attachPageListeners(state, page, targetId) {
     state.pages.delete(targetId)
     state.pageIds.delete(page)
     state.refsByTarget.delete(targetId)
+    state.pendingReadyTargets.delete(targetId)
+    state.inflightRequestsByTarget.delete(targetId)
     if (state.activeTargetId === targetId) {
       const next = Array.from(state.pages.keys())[0] || null
       state.activeTargetId = next
@@ -229,6 +259,7 @@ function registerPage(state, page) {
   const targetId = `t${state.nextTargetSeq++}`
   state.pages.set(targetId, page)
   state.pageIds.set(page, targetId)
+  state.inflightRequestsByTarget.set(targetId, 0)
   if (!state.activeTargetId) state.activeTargetId = targetId
   attachPageListeners(state, page, targetId)
   return targetId
@@ -400,6 +431,97 @@ function sanitizeActTimeout(timeoutValue, fallback = 2500) {
   return clampInteger(Number(timeoutValue), 250, 20_000, fallback)
 }
 
+function normalizePerformancePreset(value) {
+  const preset = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (preset === 'safe' || preset === 'balanced' || preset === 'fast') return preset
+  return 'balanced'
+}
+
+function resolveActStrategy(params, browserConfig) {
+  const explicit = typeof params?.strategy === 'string' ? params.strategy.trim().toLowerCase() : ''
+  if (explicit === 'fast' || explicit === 'balanced' || explicit === 'robust') return explicit
+  const preset = normalizePerformancePreset(browserConfig?.performance_preset)
+  if (preset === 'safe') return 'robust'
+  if (preset === 'fast') return 'fast'
+  return 'balanced'
+}
+
+function resolveDefaultActTimeoutMs(browserConfig, strategy) {
+  const configured = Number(browserConfig?.default_act_timeout_ms)
+  if (Number.isFinite(configured)) {
+    return sanitizeActTimeout(configured, 1400)
+  }
+  if (strategy === 'robust') return 2500
+  if (strategy === 'fast') return 900
+  return 1400
+}
+
+function resolveActTimeoutMs(params, browserConfig, strategy) {
+  const configuredDefault = resolveDefaultActTimeoutMs(browserConfig, strategy)
+  const timeoutRaw = params?.timeout_ms
+  if (strategy === 'robust') {
+    return sanitizeActTimeout(timeoutRaw, Math.max(1800, configuredDefault))
+  }
+  if (strategy === 'fast') {
+    return sanitizeActTimeout(timeoutRaw, Math.min(configuredDefault, 1200))
+  }
+  return sanitizeActTimeout(timeoutRaw, configuredDefault)
+}
+
+function buildPerfMeta(perf = {}) {
+  const durationMs = Number(perf.duration_ms)
+  return {
+    resolve_ms: Number(perf.resolve_ms) || 0,
+    locate_ms: Number(perf.locate_ms) || 0,
+    action_ms: Number(perf.action_ms) || 0,
+    fallback_count: Number(perf.fallback_count) || 0,
+    total_ms: Number.isFinite(durationMs) ? durationMs : 0
+  }
+}
+
+function movePerfFromData(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { payload: data, perf: null }
+  }
+  const perf = data.__perf && typeof data.__perf === 'object' ? data.__perf : null
+  if (!perf) return { payload: data, perf: null }
+  const payload = { ...data }
+  delete payload.__perf
+  return { payload, perf }
+}
+
+function markTargetNeedsReady(state, targetId) {
+  if (!targetId) return
+  state.pendingReadyTargets.set(targetId, Date.now())
+}
+
+function targetNeedsReadyGate(state, targetId) {
+  const ts = state.pendingReadyTargets.get(targetId)
+  if (!ts) return false
+  state.pendingReadyTargets.delete(targetId)
+  return (Date.now() - ts) <= TARGET_READY_TTL_MS
+}
+
+function stageTimeouts(totalTimeoutMs, strategy) {
+  const total = sanitizeActTimeout(totalTimeoutMs, 1400)
+  if (strategy === 'fast') {
+    const primary = clampInteger(total * 0.35, 120, total, 360)
+    const semantic = clampInteger(total * 0.30, 120, total, 300)
+    const fallback = clampInteger(total - primary - semantic, 120, total, 360)
+    return { total, primary, semantic, fallback }
+  }
+  if (strategy === 'robust') {
+    const primary = clampInteger(total * 0.45, 200, total, 1200)
+    const semantic = clampInteger(total * 0.30, 180, total, 900)
+    const fallback = clampInteger(total - primary - semantic, 180, total, 1000)
+    return { total, primary, semantic, fallback }
+  }
+  const primary = clampInteger(total * 0.40, 150, total, 700)
+  const semantic = clampInteger(total * 0.30, 150, total, 500)
+  const fallback = clampInteger(total - primary - semantic, 150, total, 500)
+  return { total, primary, semantic, fallback }
+}
+
 function uniqueStrings(values) {
   const seen = new Set()
   const result = []
@@ -487,8 +609,10 @@ function roleHintForLocator(refEntry) {
   return null
 }
 
-async function clickLocator(locator, params, timeoutMs) {
-  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+async function clickLocator(locator, params, timeoutMs, options = {}) {
+  if (options.scroll !== false) {
+    await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+  }
   await locator.click({
     button: typeof params.button === 'string' ? params.button : 'left',
     clickCount: params.double ? 2 : 1,
@@ -496,8 +620,10 @@ async function clickLocator(locator, params, timeoutMs) {
   })
 }
 
-async function typeLocator(locator, params, timeoutMs) {
-  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+async function typeLocator(locator, params, timeoutMs, options = {}) {
+  if (options.scroll !== false) {
+    await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined)
+  }
   if (params.replace !== false) {
     await locator.fill(String(params.text || ''), { timeout: timeoutMs })
   } else {
@@ -505,15 +631,33 @@ async function typeLocator(locator, params, timeoutMs) {
   }
 }
 
-async function robustClick(page, selectors, refEntry, params) {
-  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+function timeLocate(timing, fn) {
+  const started = Date.now()
+  const value = fn()
+  timing.locate_ms += Date.now() - started
+  return value
+}
+
+async function timeAction(timing, fn) {
+  const started = Date.now()
+  const result = await fn()
+  timing.action_ms += Date.now() - started
+  return result
+}
+
+async function robustClick(page, selectors, refEntry, params, strategyConfig, timing) {
+  const timeoutPrimary = strategyConfig.primary
+  const timeoutSemantic = strategyConfig.semantic
+  const timeoutFallback = strategyConfig.fallback
   const attempts = []
 
-  for (const selector of selectors) {
+  for (let index = 0; index < selectors.length; index += 1) {
+    const selector = selectors[index]
+    const timeoutMs = index === 0 ? timeoutPrimary : timeoutFallback
     try {
-      const locator = page.locator(selector).first()
-      await clickLocator(locator, params, timeoutMs)
-      return { method: 'selector', selector, attempts }
+      const locator = timeLocate(timing, () => page.locator(selector).first())
+      await timeAction(timing, () => clickLocator(locator, params, timeoutMs, { scroll: false }))
+      return { method: 'selector', selector, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
     }
@@ -526,8 +670,9 @@ async function robustClick(page, selectors, refEntry, params) {
 
   if (roleHint && nameHint) {
     try {
-      await clickLocator(page.getByRole(roleHint, { name: nameHint, exact: false }).first(), params, timeoutMs)
-      return { method: 'role_name', role: roleHint, name: nameHint, attempts }
+      const locator = timeLocate(timing, () => page.getByRole(roleHint, { name: nameHint, exact: false }).first())
+      await timeAction(timing, () => clickLocator(locator, params, timeoutSemantic, { scroll: true }))
+      return { method: 'role_name', role: roleHint, name: nameHint, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`role:${roleHint}(${nameHint}) => ${makeErrorMessage(error)}`)
     }
@@ -535,52 +680,30 @@ async function robustClick(page, selectors, refEntry, params) {
 
   if (nameHint) {
     try {
-      await clickLocator(page.getByLabel(nameHint, { exact: false }).first(), params, timeoutMs)
-      return { method: 'label', label: nameHint, attempts }
+      const locator = timeLocate(timing, () => page.getByLabel(nameHint, { exact: false }).first())
+      await timeAction(timing, () => clickLocator(locator, params, timeoutSemantic, { scroll: true }))
+      return { method: 'label', label: nameHint, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`label:${nameHint} => ${makeErrorMessage(error)}`)
     }
   }
 
-  if (typeof refEntry?.placeholder === 'string' && refEntry.placeholder.trim()) {
+  if (params.allow_coordinate_fallback === true && refEntry?.bbox && Number.isFinite(refEntry.bbox.y)) {
     try {
-      await clickLocator(
-        page.getByPlaceholder(refEntry.placeholder.trim(), { exact: false }).first(),
-        params,
-        timeoutMs
-      )
-      return { method: 'placeholder', placeholder: refEntry.placeholder.trim(), attempts }
-    } catch (error) {
-      attempts.push(`placeholder:${refEntry.placeholder.trim()} => ${makeErrorMessage(error)}`)
-    }
-  }
-
-  const textHint = typeof refEntry?.text === 'string' ? refEntry.text.trim() : ''
-  if (textHint && textHint.length <= 120) {
-    try {
-      await clickLocator(page.getByText(textHint, { exact: false }).first(), params, timeoutMs)
-      return { method: 'text', text: textHint, attempts }
-    } catch (error) {
-      attempts.push(`text:${textHint} => ${makeErrorMessage(error)}`)
-    }
-  }
-
-  if (refEntry?.bbox && Number.isFinite(refEntry.bbox.y)) {
-    try {
-      await page.evaluate((y) => {
+      await timeAction(timing, () => page.evaluate((y) => {
         const target = Math.max(0, Number(y) - window.innerHeight * 0.35)
         window.scrollTo({ top: target, behavior: 'auto' })
-      }, refEntry.bbox.y)
-      const viewport = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+      }, refEntry.bbox.y))
+      const viewport = await timeAction(timing, () => page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight })))
       const rawX = Number(refEntry.bbox.cx ?? (refEntry.bbox.x + refEntry.bbox.width / 2))
       const rawY = Number(refEntry.bbox.cy ?? (refEntry.bbox.y + refEntry.bbox.height / 2))
       const x = Math.max(1, Math.min(Math.max(1, viewport.w - 1), rawX))
       const y = Math.max(1, Math.min(Math.max(1, viewport.h - 1), rawY))
-      await page.mouse.click(x, y, {
+      await timeAction(timing, () => page.mouse.click(x, y, {
         button: typeof params.button === 'string' ? params.button : 'left',
         clickCount: params.double ? 2 : 1
-      })
-      return { method: 'coordinates', x, y, attempts }
+      }))
+      return { method: 'coordinates', x, y, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`coordinates => ${makeErrorMessage(error)}`)
     }
@@ -588,7 +711,7 @@ async function robustClick(page, selectors, refEntry, params) {
 
   for (const selector of selectors) {
     try {
-      const clicked = await page.evaluate((candidate) => {
+      const clicked = await timeAction(timing, () => page.evaluate((candidate) => {
         try {
           const element = document.querySelector(candidate)
           if (!element) return false
@@ -602,9 +725,9 @@ async function robustClick(page, selectors, refEntry, params) {
         } catch {
           return false
         }
-      }, selector)
+      }, selector))
       if (clicked) {
-        return { method: 'dom_click', selector, attempts }
+        return { method: 'dom_click', selector, attempts, fallback_count: attempts.length }
       }
       attempts.push(`dom_click:${selector} => element_not_found`)
     } catch (error) {
@@ -616,17 +739,22 @@ async function robustClick(page, selectors, refEntry, params) {
   throw new Error(`act.click failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
 }
 
-async function robustType(page, selectors, refEntry, params) {
-  const timeoutMs = sanitizeActTimeout(params.timeout_ms, 2500)
+async function robustType(page, selectors, refEntry, params, strategyConfig, timing) {
+  const timeoutPrimary = strategyConfig.primary
+  const timeoutSemantic = strategyConfig.semantic
+  const timeoutFallback = strategyConfig.fallback
   const attempts = []
 
-  for (const selector of selectors) {
+  for (let index = 0; index < selectors.length; index += 1) {
+    const selector = selectors[index]
+    const timeoutMs = index === 0 ? timeoutPrimary : timeoutFallback
     try {
-      await typeLocator(page.locator(selector).first(), params, timeoutMs)
+      const locator = timeLocate(timing, () => page.locator(selector).first())
+      await timeAction(timing, () => typeLocator(locator, params, timeoutMs, { scroll: false }))
       if (params.submit) {
-        await page.keyboard.press('Enter')
+        await timeAction(timing, () => page.keyboard.press('Enter'))
       }
-      return { method: 'selector', selector, attempts }
+      return { method: 'selector', selector, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`selector:${selector} => ${makeErrorMessage(error)}`)
     }
@@ -635,25 +763,50 @@ async function robustType(page, selectors, refEntry, params) {
   const nameHint = typeof refEntry?.name === 'string' ? refEntry.name.trim() : ''
   if (nameHint) {
     try {
-      await typeLocator(page.getByLabel(nameHint, { exact: false }).first(), params, timeoutMs)
+      const locator = timeLocate(timing, () => page.getByLabel(nameHint, { exact: false }).first())
+      await timeAction(timing, () => typeLocator(locator, params, timeoutSemantic, { scroll: true }))
       if (params.submit) {
-        await page.keyboard.press('Enter')
+        await timeAction(timing, () => page.keyboard.press('Enter'))
       }
-      return { method: 'label', label: nameHint, attempts }
+      return { method: 'label', label: nameHint, attempts, fallback_count: attempts.length }
     } catch (error) {
       attempts.push(`label:${nameHint} => ${makeErrorMessage(error)}`)
     }
   }
 
-  if (typeof refEntry?.placeholder === 'string' && refEntry.placeholder.trim()) {
+  for (const selector of selectors) {
     try {
-      await typeLocator(page.getByPlaceholder(refEntry.placeholder.trim(), { exact: false }).first(), params, timeoutMs)
-      if (params.submit) {
-        await page.keyboard.press('Enter')
+      const changed = await timeAction(timing, () => page.evaluate(
+        ({ candidate, text, replace }) => {
+          try {
+            const el = document.querySelector(candidate)
+            if (!el) return false
+            if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false
+            el.focus()
+            if (replace !== false) {
+              el.value = text
+            } else {
+              el.value += text
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+            el.dispatchEvent(new Event('change', { bubbles: true }))
+            return true
+          } catch {
+            return false
+          }
+        },
+        { candidate: selector, text: String(params.text || ''), replace: params.replace }
+      ))
+      if (!changed) {
+        attempts.push(`dom_type:${selector} => element_not_found`)
+        continue
       }
-      return { method: 'placeholder', placeholder: refEntry.placeholder.trim(), attempts }
+      if (params.submit) {
+        await timeAction(timing, () => page.keyboard.press('Enter'))
+      }
+      return { method: 'dom_type', selector, attempts, fallback_count: attempts.length }
     } catch (error) {
-      attempts.push(`placeholder:${refEntry.placeholder.trim()} => ${makeErrorMessage(error)}`)
+      attempts.push(`dom_type:${selector} => ${makeErrorMessage(error)}`)
     }
   }
 
@@ -695,15 +848,187 @@ async function robustSelect(page, selectors, params) {
   throw new Error(`act.select failed after ${attempts.length} attempts${lastErrors ? `: ${lastErrors}` : ''}`)
 }
 
+async function hasVisibleLoadingIndicators(page) {
+  return await page.evaluate(() => {
+    const selectors = [
+      '[class*="spinner"]',
+      '[class*="loading"]',
+      '[class*="loader"]',
+      '[class*="skeleton"]',
+      '[class*="progress"]',
+      '[aria-busy="true"]',
+      '[role="progressbar"]'
+    ]
+    for (const selector of selectors) {
+      const nodes = document.querySelectorAll(selector)
+      for (const node of nodes) {
+        if (!(node instanceof HTMLElement)) continue
+        const style = getComputedStyle(node)
+        const rect = node.getBoundingClientRect()
+        const visible = style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          rect.width > 0 &&
+          rect.height > 0
+        if (visible) return true
+      }
+    }
+    return false
+  })
+}
+
+async function waitForLoadingIndicatorsToDisappear(page, timeoutMs) {
+  const started = Date.now()
+  while ((Date.now() - started) < timeoutMs) {
+    const hasLoadingIndicators = await hasVisibleLoadingIndicators(page)
+    if (!hasLoadingIndicators) return { ok: true, duration_ms: Date.now() - started }
+    await page.waitForTimeout(80)
+  }
+  return { ok: false, duration_ms: Date.now() - started, reason: 'loading_timeout' }
+}
+
+async function waitForTargetNetworkIdle(state, targetId, timeoutMs, stableMs) {
+  const started = Date.now()
+  let idleStarted = null
+  while ((Date.now() - started) < timeoutMs) {
+    const inflight = Number(state.inflightRequestsByTarget.get(targetId) || 0)
+    if (inflight === 0) {
+      if (idleStarted == null) {
+        idleStarted = Date.now()
+      } else if ((Date.now() - idleStarted) >= stableMs) {
+        return { ok: true, duration_ms: Date.now() - started }
+      }
+    } else {
+      idleStarted = null
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  return { ok: false, duration_ms: Date.now() - started, reason: 'network_idle_timeout' }
+}
+
+async function waitForDomStable(page, stableMs, timeoutMs) {
+  const started = Date.now()
+  try {
+    await page.evaluate(
+      ({ stable, timeout }) => new Promise((resolve) => {
+        const root = document.body || document.documentElement
+        if (!root) {
+          resolve(true)
+          return
+        }
+        let done = false
+        let timer = null
+        let stableTimer = null
+        const cleanup = () => {
+          done = true
+          if (timer) clearTimeout(timer)
+          if (stableTimer) clearTimeout(stableTimer)
+          observer.disconnect()
+        }
+        const settle = () => {
+          if (done) return
+          cleanup()
+          resolve(true)
+        }
+        const rearm = () => {
+          if (done) return
+          if (stableTimer) clearTimeout(stableTimer)
+          stableTimer = setTimeout(settle, stable)
+        }
+        const observer = new MutationObserver((mutations) => {
+          if (done) return
+          const significant = mutations.some((mutation) => {
+            if (mutation.type === 'childList') return true
+            if (mutation.type === 'characterData') return true
+            if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
+              const rect = mutation.target.getBoundingClientRect()
+              return rect.width > 0 && rect.height > 0
+            }
+            return false
+          })
+          if (significant) rearm()
+        })
+        observer.observe(root, { childList: true, subtree: true, attributes: true, characterData: true })
+        timer = setTimeout(settle, timeout)
+        rearm()
+      }),
+      { stable: stableMs, timeout: timeoutMs }
+    )
+    return { ok: true, duration_ms: Date.now() - started }
+  } catch {
+    return { ok: false, duration_ms: Date.now() - started, reason: 'dom_stability_error' }
+  }
+}
+
+function recordReadyCheckFailure(state, targetId, phase, detail) {
+  if (!detail || detail.ok !== false) return
+  pushLimited(state.errors, {
+    message: `[ready_check:${phase}] ${detail.reason || 'failed'}`,
+    target_id: targetId,
+    ts: nowIso()
+  })
+}
+
+async function waitForPageReadyBeforeAct(state, targetId, page) {
+  const loadingVisible = await hasVisibleLoadingIndicators(page).catch(() => false)
+  const inflightAtStart = Number(state.inflightRequestsByTarget.get(targetId) || 0)
+
+  const loadingResult = loadingVisible
+    ? await waitForLoadingIndicatorsToDisappear(page, PAGE_READY_LOADING_TIMEOUT_MS).catch(() => ({
+      ok: false,
+      duration_ms: PAGE_READY_LOADING_TIMEOUT_MS,
+      reason: 'loading_check_error'
+    }))
+    : { ok: true, duration_ms: 0, skipped: true }
+
+  const networkResult = inflightAtStart > 0
+    ? await waitForTargetNetworkIdle(
+      state,
+      targetId,
+      PAGE_READY_NETWORK_IDLE_TIMEOUT_MS,
+      PAGE_READY_NETWORK_IDLE_STABLE_MS
+    ).catch(() => ({
+      ok: false,
+      duration_ms: PAGE_READY_NETWORK_IDLE_TIMEOUT_MS,
+      reason: 'network_idle_error'
+    }))
+    : { ok: true, duration_ms: 0, skipped: true }
+
+  const shouldCheckDomStability = loadingVisible || inflightAtStart > 0
+  const domResult = shouldCheckDomStability
+    ? await waitForDomStable(
+      page,
+      PAGE_READY_DOM_STABLE_MS,
+      PAGE_READY_DOM_STABILITY_TIMEOUT_MS
+    ).catch(() => ({
+      ok: false,
+      duration_ms: PAGE_READY_DOM_STABILITY_TIMEOUT_MS,
+      reason: 'dom_stability_timeout'
+    }))
+    : { ok: true, duration_ms: 0, skipped: true }
+
+  return {
+    loading: loadingResult,
+    network_idle: networkResult,
+    dom_stability: domResult
+  }
+}
+
 async function buildSnapshot(state, request) {
   const { page, targetId } = resolvePage(state, request)
+  const modeRaw = typeof request.params?.mode === 'string' ? request.params.mode.trim().toLowerCase() : ''
+  const mode = modeRaw === 'full' ? 'full' : 'compact'
+  const compactMode = mode === 'compact'
+  const defaultRefs = compactMode ? DEFAULT_COMPACT_SNAPSHOT_REFS : DEFAULT_SNAPSHOT_MAX_REFS
+  const candidateLimit = compactMode ? 1000 : 1500
+  const maxLimit = compactMode ? 300 : MAX_SNAPSHOT_MAX_REFS
   const maxRefs = clampInteger(
     Number(request.params?.max_refs),
     20,
-    MAX_SNAPSHOT_MAX_REFS,
-    DEFAULT_SNAPSHOT_MAX_REFS
+    maxLimit,
+    defaultRefs
   )
-  const snapshotResult = await page.evaluate(({ markerAttr, maxRefs }) => {
+  const snapshotResult = await page.evaluate(({ markerAttr, maxRefs, candidateLimit, mode }) => {
     function normalizeText(value, limit = 160) {
       return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
     }
@@ -815,7 +1140,7 @@ async function buildSnapshot(state, request) {
       document.querySelectorAll(
         'a,button,input,textarea,select,summary,label,[role],[tabindex],[onclick],[aria-label],[data-testid],[contenteditable=""],[contenteditable="true"]'
       )
-    ).slice(0, 1500)
+    ).slice(0, candidateLimit)
 
     const entries = []
     for (const el of rawCandidates) {
@@ -950,10 +1275,11 @@ async function buildSnapshot(state, request) {
       stats: {
         total_candidates: entries.length,
         viewport_count: entries.filter((entry) => entry.in_viewport).length,
-        selected_count: rows.length
+        selected_count: rows.length,
+        mode
       }
     }
-  }, { markerAttr: SNAPSHOT_MARKER_ATTR, maxRefs })
+  }, { markerAttr: SNAPSHOT_MARKER_ATTR, maxRefs, candidateLimit, mode })
 
   const refs = snapshotResult.rows || []
   const refMap = new Map(refs.map((row) => [row.ref, row]))
@@ -965,6 +1291,7 @@ async function buildSnapshot(state, request) {
     title: await page.title().catch(() => ''),
     refs: refs.map(compactSnapshotEntry),
     stats: {
+      mode,
       count: refs.length,
       total_candidates: snapshotResult.stats?.total_candidates || refs.length,
       viewport_count: snapshotResult.stats?.viewport_count || refs.length
@@ -984,11 +1311,25 @@ function resolveSelectorFromRef(state, targetId, ref) {
   return null
 }
 
-async function executeAct(state, request) {
+async function executeAct(state, request, browserConfig, options = {}) {
+  const started = Date.now()
+  const perf = {
+    resolve_ms: 0,
+    locate_ms: 0,
+    action_ms: 0,
+    fallback_count: 0,
+    duration_ms: 0
+  }
+  const resolveStarted = Date.now()
   const params = requireObject(request.params || {}, 'params')
   const { page, targetId } = resolvePage(state, request)
-  const kind = typeof params.kind === 'string' ? params.kind : ''
+  const kind = typeof params.kind === 'string' ? params.kind.trim().toLowerCase() : ''
   if (!kind) throw new Error('act.kind is required')
+
+  const strategy = resolveActStrategy(params, browserConfig)
+  const timeoutMs = resolveActTimeoutMs(params, browserConfig, strategy)
+  const strategyConfig = stageTimeouts(timeoutMs, strategy)
+  const paramsWithResolvedTimeout = { ...params, timeout_ms: timeoutMs }
 
   const ref = typeof params.ref === 'string' ? params.ref : null
   const selector = typeof params.selector === 'string' ? params.selector : null
@@ -999,87 +1340,196 @@ async function executeAct(state, request) {
   const selectorCandidates = selectorCandidatesFromRef(selector, refEntry)
   const primarySelector = selectorCandidates[0] || null
 
+  if (!options.skip_ready_check && targetNeedsReadyGate(state, targetId)) {
+    const readyState = await waitForPageReadyBeforeAct(state, targetId, page).catch(() => undefined)
+    if (readyState) {
+      recordReadyCheckFailure(state, targetId, 'loading', readyState.loading)
+      recordReadyCheckFailure(state, targetId, 'network_idle', readyState.network_idle)
+      recordReadyCheckFailure(state, targetId, 'dom_stability', readyState.dom_stability)
+    }
+  }
+  perf.resolve_ms = Date.now() - resolveStarted
+
   switch (kind) {
     case 'click': {
       if (selectorCandidates.length === 0) throw new Error('act.click requires ref or selector')
-      const detail = await robustClick(page, selectorCandidates, refEntry, params)
+      const timing = { locate_ms: 0, action_ms: 0 }
+      const detail = await robustClick(page, selectorCandidates, refEntry, paramsWithResolvedTimeout, strategyConfig, timing)
+      perf.locate_ms += timing.locate_ms
+      perf.action_ms += timing.action_ms
+      perf.fallback_count += detail.fallback_count || 0
+      perf.duration_ms = Date.now() - started
       return {
         ok: true,
         action: 'click',
         target_id: targetId,
         selector: detail.selector || primarySelector,
-        method: detail.method
+        method: detail.method,
+        strategy,
+        __perf: perf
       }
     }
-    case 'type':
+    case 'type': {
       if (selectorCandidates.length === 0) throw new Error('act.type requires ref or selector')
-      {
-        const detail = await robustType(page, selectorCandidates, refEntry, params)
-        return {
-          ok: true,
-          action: 'type',
-          target_id: targetId,
-          selector: detail.selector || primarySelector,
-          method: detail.method
-        }
+      const timing = { locate_ms: 0, action_ms: 0 }
+      const detail = await robustType(page, selectorCandidates, refEntry, paramsWithResolvedTimeout, strategyConfig, timing)
+      perf.locate_ms += timing.locate_ms
+      perf.action_ms += timing.action_ms
+      perf.fallback_count += detail.fallback_count || 0
+      perf.duration_ms = Date.now() - started
+      return {
+        ok: true,
+        action: 'type',
+        target_id: targetId,
+        selector: detail.selector || primarySelector,
+        method: detail.method,
+        strategy,
+        __perf: perf
       }
+    }
     case 'press':
-      await page.keyboard.press(String(params.key || 'Enter'))
-      return { ok: true, action: 'press', target_id: targetId }
+      {
+        const actionStarted = Date.now()
+        await page.keyboard.press(String(params.key || 'Enter'))
+        perf.action_ms += Date.now() - actionStarted
+      }
+      perf.duration_ms = Date.now() - started
+      return { ok: true, action: 'press', target_id: targetId, strategy, __perf: perf }
     case 'hover':
       if (selectorCandidates.length === 0) throw new Error('act.hover requires ref or selector')
       {
-        const detail = await robustHover(page, selectorCandidates, params)
+        const hoverStarted = Date.now()
+        const detail = await robustHover(page, selectorCandidates, paramsWithResolvedTimeout)
+        perf.action_ms += Date.now() - hoverStarted
+        perf.fallback_count += detail.attempts?.length || 0
+        perf.duration_ms = Date.now() - started
         return {
           ok: true,
           action: 'hover',
           target_id: targetId,
           selector: detail.selector || primarySelector,
-          method: detail.method
+          method: detail.method,
+          strategy,
+          __perf: perf
         }
       }
     case 'scroll':
-      await page.evaluate(
-        ({ x, y }) => window.scrollBy(Number(x) || 0, Number(y) || 0),
-        { x: params.x, y: params.y }
-      )
-      return { ok: true, action: 'scroll', target_id: targetId }
+      {
+        const actionStarted = Date.now()
+        await page.evaluate(
+          ({ x, y }) => window.scrollBy(Number(x) || 0, Number(y) || 0),
+          { x: params.x, y: params.y }
+        )
+        perf.action_ms += Date.now() - actionStarted
+        perf.duration_ms = Date.now() - started
+        return { ok: true, action: 'scroll', target_id: targetId, strategy, __perf: perf }
+      }
     case 'select':
       if (selectorCandidates.length === 0) throw new Error('act.select requires ref or selector')
       {
-        const detail = await robustSelect(page, selectorCandidates, params)
+        const selectStarted = Date.now()
+        const detail = await robustSelect(page, selectorCandidates, paramsWithResolvedTimeout)
+        perf.action_ms += Date.now() - selectStarted
+        perf.fallback_count += detail.attempts?.length || 0
+        perf.duration_ms = Date.now() - started
         return {
           ok: true,
           action: 'select',
           target_id: targetId,
           selector: detail.selector || primarySelector,
-          method: detail.method
+          method: detail.method,
+          strategy,
+          __perf: perf
         }
       }
     case 'wait':
-      if (params.selector) {
-        await page.waitForSelector(String(params.selector), {
-          timeout: Number.isInteger(params.timeout_ms) ? params.timeout_ms : undefined
-        })
-      } else if (params.url) {
-        await page.waitForURL(String(params.url), {
-          timeout: Number.isInteger(params.timeout_ms) ? params.timeout_ms : undefined
-        })
-      } else {
-        await page.waitForTimeout(Number.isInteger(params.timeout_ms) ? params.timeout_ms : 1000)
+      {
+        const actionStarted = Date.now()
+        if (params.selector) {
+          await page.waitForSelector(String(params.selector), {
+            timeout: Number.isInteger(params.timeout_ms) ? params.timeout_ms : timeoutMs
+          })
+        } else if (params.url) {
+          await page.waitForURL(String(params.url), {
+            timeout: Number.isInteger(params.timeout_ms) ? params.timeout_ms : timeoutMs
+          })
+        } else {
+          await page.waitForTimeout(Number.isInteger(params.timeout_ms) ? params.timeout_ms : 250)
+        }
+        perf.action_ms += Date.now() - actionStarted
+        perf.duration_ms = Date.now() - started
+        return { ok: true, action: 'wait', target_id: targetId, strategy, __perf: perf }
       }
-      return { ok: true, action: 'wait', target_id: targetId }
     case 'drag': {
       const fromRef = typeof params.from_ref === 'string' ? params.from_ref : null
       const toRef = typeof params.to_ref === 'string' ? params.to_ref : null
       const fromSelector = fromRef ? resolveSelectorFromRef(state, targetId, fromRef) : null
       const toSelector = toRef ? resolveSelectorFromRef(state, targetId, toRef) : null
       if (!fromSelector || !toSelector) throw new Error('act.drag requires from_ref and to_ref')
+      const actionStarted = Date.now()
       await page.dragAndDrop(fromSelector, toSelector)
-      return { ok: true, action: 'drag', target_id: targetId }
+      perf.action_ms += Date.now() - actionStarted
+      perf.duration_ms = Date.now() - started
+      return { ok: true, action: 'drag', target_id: targetId, strategy, __perf: perf }
     }
     default:
       throw new Error(`Unsupported act.kind: ${kind}`)
+  }
+}
+
+async function executeActBatch(state, request, browserConfig) {
+  const params = requireObject(request.params || {}, 'params')
+  if (!Array.isArray(params.actions) || params.actions.length === 0) {
+    throw new Error('act_batch requires params.actions (non-empty array)')
+  }
+  const stopOnError = params.stop_on_error !== false
+  const results = []
+  const perf = {
+    resolve_ms: 0,
+    locate_ms: 0,
+    action_ms: 0,
+    fallback_count: 0,
+    duration_ms: 0
+  }
+  const started = Date.now()
+  for (let index = 0; index < params.actions.length; index += 1) {
+    const actionParams = requireObject(params.actions[index], `params.actions[${index}]`)
+    const subRequest = {
+      ...request,
+      params: actionParams
+    }
+    try {
+      const item = await executeAct(state, subRequest, browserConfig, { skip_ready_check: false })
+      const itemPerf = item.__perf && typeof item.__perf === 'object' ? item.__perf : {}
+      results.push({
+        index,
+        ok: true,
+        action: item.action || actionParams.kind || 'act',
+        target_id: item.target_id || request.target_id || null,
+        method: item.method || null,
+        selector: item.selector || null,
+        meta: buildPerfMeta(itemPerf)
+      })
+      perf.resolve_ms += Number(itemPerf.resolve_ms) || 0
+      perf.locate_ms += Number(itemPerf.locate_ms) || 0
+      perf.action_ms += Number(itemPerf.action_ms) || 0
+      perf.fallback_count += Number(itemPerf.fallback_count) || 0
+    } catch (error) {
+      results.push({
+        index,
+        ok: false,
+        action: actionParams.kind || 'act',
+        error: makeErrorMessage(error)
+      })
+      if (stopOnError) break
+    }
+  }
+  perf.duration_ms = Date.now() - started
+  return {
+    ok: true,
+    action: 'act_batch',
+    results,
+    __perf: perf
   }
 }
 
@@ -1115,7 +1565,10 @@ async function handleAction(params) {
         running: Boolean(runtime.profiles.get(name)?.context),
         mode: runtime.profiles.get(name)?.connectionMode || null
       })),
-      default_profile: browserConfig.default_profile
+      default_profile: browserConfig.default_profile,
+      performance_preset: normalizePerformancePreset(browserConfig.performance_preset),
+      capture_response_bodies: Boolean(browserConfig.capture_response_bodies),
+      default_act_timeout_ms: resolveDefaultActTimeoutMs(browserConfig, 'balanced')
     }
   }
 
@@ -1145,6 +1598,7 @@ async function handleAction(params) {
   }
 
   const state = getProfileState(profileName)
+  state.captureResponseBodies = Boolean(browserConfig.capture_response_bodies)
 
   if (action === 'start') {
     const hasCdp = typeof profileConfig?.cdp_url === 'string' && profileConfig.cdp_url.trim().length > 0
@@ -1217,6 +1671,7 @@ async function handleAction(params) {
     const page = await state.context.newPage()
     const targetId = registerPage(state, page)
     await page.goto(url, { waitUntil: 'domcontentloaded' })
+    markTargetNeedsReady(state, targetId)
     state.activeTargetId = targetId
     return {
       target_id: targetId,
@@ -1229,6 +1684,7 @@ async function handleAction(params) {
     const { page, targetId } = resolvePage(state, request)
     await page.bringToFront().catch(() => undefined)
     state.activeTargetId = targetId
+    markTargetNeedsReady(state, targetId)
     return { target_id: targetId, focused: true }
   }
 
@@ -1244,8 +1700,13 @@ async function handleAction(params) {
     if (!url) throw new Error('navigate requires params.url')
     assertPrivateNetworkAllowed(url, browserConfig.allow_private_network)
     const response = await page.goto(url, { waitUntil: 'domcontentloaded' })
-    const html = await page.content()
-    const links = extractPageLinks(html, page.url(), Number(request.params?.max_links) || 30)
+    markTargetNeedsReady(state, targetId)
+    const includeLinks = Boolean(request.params?.include_links)
+    let links = []
+    if (includeLinks) {
+      const html = await page.content()
+      links = extractPageLinks(html, page.url(), Number(request.params?.max_links) || 30)
+    }
     return {
       target_id: targetId,
       url: page.url(),
@@ -1276,7 +1737,11 @@ async function handleAction(params) {
   }
 
   if (action === 'act') {
-    return await executeAct(state, request)
+    return await executeAct(state, request, browserConfig)
+  }
+
+  if (action === 'act_batch') {
+    return await executeActBatch(state, request, browserConfig)
   }
 
   if (action === 'console') {
@@ -1300,11 +1765,14 @@ async function handleAction(params) {
   }
 
   if (action === 'response_body') {
+    if (!state.captureResponseBodies) {
+      return { capture_enabled: false, item: null }
+    }
     const pattern = request.params?.pattern ? String(request.params.pattern) : ''
     const item = pattern
       ? [...state.responseBodies].reverse().find((entry) => entry.url.includes(pattern))
       : state.responseBodies[state.responseBodies.length - 1]
-    return { item: item || null }
+    return { capture_enabled: true, item: item || null }
   }
 
   if (action === 'pdf') {
@@ -1504,44 +1972,79 @@ async function dispatch(requestLine) {
   const id = request?.id ?? null
   try {
     if (request.method === 'health') {
+      const durationMs = Date.now() - started
       return {
         id,
         ok: true,
         data: { status: 'ok', ts: nowIso() },
         error: null,
-        meta: { duration_ms: Date.now() - started }
+        meta: {
+          duration_ms: durationMs,
+          resolve_ms: 0,
+          locate_ms: 0,
+          action_ms: 0,
+          fallback_count: 0,
+          total_ms: durationMs
+        }
       }
     }
     if (request.method === 'shutdown') {
       for (const [name] of runtime.profiles) {
         await closeProfile(name)
       }
+      const durationMs = Date.now() - started
       return {
         id,
         ok: true,
         data: { shutdown: true },
         error: null,
-        meta: { duration_ms: Date.now() - started }
+        meta: {
+          duration_ms: durationMs,
+          resolve_ms: 0,
+          locate_ms: 0,
+          action_ms: 0,
+          fallback_count: 0,
+          total_ms: durationMs
+        }
       }
     }
     if (request.method !== 'browser.action') {
       throw new Error(`Unknown method: ${request.method}`)
     }
-    const data = await handleAction(request.params)
+    const rawData = await handleAction(request.params)
+    const { payload, perf } = movePerfFromData(rawData)
+    const durationMs = Date.now() - started
+    const perfMeta = buildPerfMeta({
+      ...(perf || {}),
+      duration_ms: (perf && Number.isFinite(Number(perf.duration_ms)))
+        ? Number(perf.duration_ms)
+        : durationMs
+    })
     return {
       id,
       ok: true,
-      data,
+      data: payload,
       error: null,
-      meta: { duration_ms: Date.now() - started }
+      meta: {
+        duration_ms: durationMs,
+        ...perfMeta
+      }
     }
   } catch (error) {
+    const durationMs = Date.now() - started
     return {
       id,
       ok: false,
       data: null,
       error: makeErrorMessage(error),
-      meta: { duration_ms: Date.now() - started }
+      meta: {
+        duration_ms: durationMs,
+        resolve_ms: 0,
+        locate_ms: 0,
+        action_ms: 0,
+        fallback_count: 0,
+        total_ms: durationMs
+      }
     }
   }
 }

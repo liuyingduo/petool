@@ -18,6 +18,42 @@
       </el-button>
     </div>
 
+    <div class="discover-row">
+      <el-input
+        v-model="discoverQuery"
+        placeholder="Search skills (e.g. word docx export)"
+        clearable
+      />
+      <el-button :loading="discovering" @click="discoverSkills">
+        Discover
+      </el-button>
+    </div>
+
+    <div v-if="discoveredSkills.length > 0" class="discover-list">
+      <div
+        v-for="item in discoveredSkills"
+        :key="item.id"
+        class="discover-item"
+      >
+        <div class="market-info">
+          <h4>{{ item.name }}</h4>
+          <p>{{ item.description || item.repo_full_name }}</p>
+          <p class="discover-meta">
+            {{ item.repo_full_name }} · ★{{ item.stars }}
+            <span v-if="item.skill_path"> · path: {{ item.skill_path }}</span>
+          </p>
+        </div>
+        <el-button
+          size="small"
+          :disabled="item.installed"
+          :loading="installing === `${item.repo_url}#${item.skill_path || '.'}`"
+          @click="installFromDiscovery(item)"
+        >
+          {{ item.installed ? 'Installed' : 'Install' }}
+        </el-button>
+      </div>
+    </div>
+
     <div class="market-list">
       <div
         v-for="item in suggestedSkills"
@@ -85,16 +121,33 @@ interface Skill {
   author: string
   enabled: boolean
   installed_at: string
-  script_type: 'rust' | 'javascript'
+  script_type: 'rust' | 'javascript' | 'markdown'
+}
+
+interface SkillDiscoveryItem {
+  id: string
+  name: string
+  description: string
+  repo_url: string
+  repo_full_name: string
+  repo_html_url: string
+  source: string
+  skill_path?: string | null
+  stars: number
+  updated_at?: string | null
+  installed: boolean
 }
 
 const loading = ref(false)
 const installingByUrl = ref(false)
 const installing = ref<string | null>(null)
+const discovering = ref(false)
 const removing = ref<string | null>(null)
 const updating = ref<string | null>(null)
 const repoUrl = ref('')
+const discoverQuery = ref('')
 const skills = ref<Skill[]>([])
+const discoveredSkills = ref<SkillDiscoveryItem[]>([])
 
 const suggestedSkills = [
   {
@@ -128,6 +181,38 @@ async function installFromRepo(repo: string) {
     await invoke('install_skill', { repoUrl: repo })
     ElMessage.success('Skill installed')
     await loadSkills()
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to install skill'
+    ElMessage.error(message)
+  } finally {
+    installing.value = null
+  }
+}
+
+async function discoverSkills() {
+  discovering.value = true
+  try {
+    discoveredSkills.value = await invoke<SkillDiscoveryItem[]>('discover_skills', {
+      query: discoverQuery.value.trim() || null,
+      limit: 8
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to discover skills'
+    ElMessage.error(message)
+  } finally {
+    discovering.value = false
+  }
+}
+
+async function installFromDiscovery(item: SkillDiscoveryItem) {
+  installing.value = `${item.repo_url}#${item.skill_path || '.'}`
+  try {
+    await invoke('install_skill', {
+      repoUrl: item.repo_url,
+      skillPath: item.skill_path ?? null
+    })
+    ElMessage.success('Skill installed')
+    await Promise.all([loadSkills(), discoverSkills()])
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to install skill'
     ElMessage.error(message)
@@ -230,6 +315,32 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.discover-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.discover-list {
+  display: grid;
+  gap: 8px;
+}
+
+.discover-item {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.discover-meta {
+  font-size: 11px;
+  color: var(--color-text-secondary);
 }
 
 .market-list {

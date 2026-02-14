@@ -31,3 +31,4 @@ src-tauri/Cargo.lock
 src-tauri/resources/browser-sidecar/dist
 src-tauri/binaries/browser-node*
 nul
+tmp/

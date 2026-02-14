@@ -126,6 +126,7 @@ const WORKSPACE_PROCESS_LIST_TOOL: &str = "workspace_process_list";
 const WORKSPACE_PROCESS_READ_TOOL: &str = "workspace_process_read";
 const WORKSPACE_PROCESS_TERMINATE_TOOL: &str = "workspace_process_terminate";
 const SKILL_INSTALL_TOOL: &str = "skills_install_from_repo";
+const SKILL_DISCOVER_TOOL: &str = "skills_discover";
 const SKILL_LIST_TOOL: &str = "skills_list";
 const SKILL_EXECUTE_TOOL: &str = "skills_execute";
 const CORE_BATCH_TOOL: &str = "core_batch";
@@ -170,6 +171,7 @@ enum RuntimeTool {
     WorkspaceProcessRead,
     WorkspaceProcessTerminate,
     SkillInstallFromRepo,
+    SkillDiscover,
     SkillList,
     SkillExecute,
     CoreBatch,
@@ -352,6 +354,98 @@ Use workspace_list_directory only for quick non-recursive inspection of one dire
     );
 }
 
+fn prepend_skills_usage_guidance(messages: &mut Vec<ChatMessage>, skills_guidance: &str) {
+    let trimmed = skills_guidance.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    messages.insert(
+        0,
+        ChatMessage {
+            role: "system".to_string(),
+            content: Some(trimmed.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    );
+}
+
+async fn build_skills_usage_guidance(skill_manager_state: &SkillManagerState) -> String {
+    let manager = skill_manager_state.lock().await;
+    let mut skills = manager.list_skills();
+    skills.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+
+    let mut lines = vec![
+        "Skills-first policy (mandatory when uncertain):".to_string(),
+        "- Before implementing an unfamiliar/specialized workflow, call `skills_list` first.".to_string(),
+        "- If exactly one skill clearly matches, call `skills_execute` and follow it.".to_string(),
+        "- If multiple skills could match, pick the most specific one and execute it.".to_string(),
+        "- If no suitable installed skill exists, call `skills_discover` with a focused query."
+            .to_string(),
+        "- Install with `skills_install_from_repo` (and optional `skill_path`) when discovery returns a suitable result."
+            .to_string(),
+        "- Only if no suitable skill can be found/installed, continue with direct implementation."
+            .to_string(),
+    ];
+
+    if skills.is_empty() {
+        lines.push("Installed skills: (none)".to_string());
+    } else {
+        lines.push("<available_skills>".to_string());
+        for skill in skills {
+            lines.push(format!("- {}: {}", skill.name, skill.description.trim()));
+        }
+        lines.push("</available_skills>".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn resolve_skillsmp_settings_for_discovery() -> (Option<String>, Option<String>) {
+    if let Ok(config) = crate::utils::load_config::<Config>() {
+        let key = config
+            .skillsmp_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let base = config
+            .skillsmp_api_base
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if key.is_some() || base.is_some() {
+            return (key, base);
+        }
+    }
+
+    let Ok(path) = crate::utils::get_config_path() else {
+        return (None, None);
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return (None, None);
+    };
+    let key = Regex::new(r#""skillsmp_api_key"\s*:\s*"([^"]*)""#)
+        .ok()
+        .and_then(|regex| regex.captures(&raw))
+        .and_then(|caps| {
+            caps.get(1)
+                .map(|capture| capture.as_str().trim().to_string())
+        })
+        .filter(|value| !value.is_empty());
+    let base = Regex::new(r#""skillsmp_api_base"\s*:\s*"([^"]*)""#)
+        .ok()
+        .and_then(|regex| regex.captures(&raw))
+        .and_then(|caps| {
+            caps.get(1)
+                .map(|capture| capture.as_str().trim().to_string())
+        })
+        .filter(|value| !value.is_empty());
+    (key, base)
+}
+
 async fn build_runtime_tool_catalog(
     mcp_state: &McpState,
     config: &Config,
@@ -494,6 +588,10 @@ async fn resolve_tool_execution_decision(
         &tool_call.function.name,
         extract_tool_path_argument(parsed_arguments).as_deref(),
     );
+
+    if config.auto_approve_tool_requests && configured_action != ToolPermissionAction::Deny {
+        return Ok(ToolApprovalDecision::AllowAlways);
+    }
 
     Ok(match configured_action {
         ToolPermissionAction::Deny => ToolApprovalDecision::Deny,
@@ -872,6 +970,7 @@ fn should_auto_allow_batch_tool(tool_name: &str) -> bool {
             | SESSIONS_LIST_TOOL
             | SESSIONS_HISTORY_TOOL
             | AGENTS_LIST_TOOL
+            | SKILL_DISCOVER_TOOL
             | SKILL_LIST_TOOL
     )
 }
@@ -1894,6 +1993,30 @@ async fn execute_skill_list(skill_manager_state: &SkillManagerState) -> Result<V
     }))
 }
 
+async fn execute_skill_discover(
+    arguments: &Value,
+    skill_manager_state: &SkillManagerState,
+) -> Result<Value, String> {
+    let query = read_optional_string_argument(arguments, "query");
+    let limit = read_u64_argument(arguments, "limit", 8).clamp(1, 20) as usize;
+    let (skillsmp_api_key, skillsmp_api_base) = resolve_skillsmp_settings_for_discovery();
+    let manager = skill_manager_state.lock().await;
+    let results = manager
+        .discover_skills(
+            query.as_deref(),
+            limit,
+            skillsmp_api_key.as_deref(),
+            skillsmp_api_base.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "query": query.unwrap_or_default(),
+        "limit": limit,
+        "results": results
+    }))
+}
+
 async fn execute_skill_execute(
     arguments: &Value,
     skill_manager_state: &SkillManagerState,
@@ -2176,6 +2299,7 @@ async fn execute_core_batch_safe_tool(
         SESSIONS_LIST_TOOL => execute_sessions_list(arguments, pool).await,
         SESSIONS_HISTORY_TOOL => execute_sessions_history(arguments, pool).await,
         AGENTS_LIST_TOOL => execute_agents_list(),
+        SKILL_DISCOVER_TOOL => execute_skill_discover(arguments, skill_manager_state).await,
         SKILL_LIST_TOOL => execute_skill_list(skill_manager_state).await,
         _ => Err(format!("Unsupported batch tool: {}", tool_name)),
     }
@@ -2302,18 +2426,28 @@ async fn execute_runtime_tool(
         }
         RuntimeTool::SkillInstallFromRepo => {
             let repo_url = read_string_argument(arguments, "repo_url")?;
+            let skill_path = read_optional_string_argument(arguments, "skill_path");
             let mut manager = skill_manager_state.lock().await;
-            let installed = manager
-                .install_skill(&repo_url)
-                .await
-                .map_err(|e| e.to_string())?;
+            let installed = if let Some(path) = skill_path.as_deref() {
+                manager
+                    .install_skill_with_path(&repo_url, Some(path))
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                manager
+                    .install_skill(&repo_url)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
 
             Ok(json!({
                 "installed": true,
                 "repo_url": repo_url,
+                "skill_path": skill_path,
                 "skill": installed
             }))
         }
+        RuntimeTool::SkillDiscover => execute_skill_discover(arguments, skill_manager_state).await,
         RuntimeTool::SkillList => execute_skill_list(skill_manager_state).await,
         RuntimeTool::SkillExecute => execute_skill_execute(arguments, skill_manager_state).await,
         RuntimeTool::CoreBatch => {
@@ -2490,6 +2624,7 @@ pub async fn stream_message(
     let llm_service = LlmService::new(api_key, config.api_base.clone());
     let mcp_state = mcp_manager.inner();
     let skill_state = skill_manager.inner();
+    let skills_guidance = build_skills_usage_guidance(skill_state).await;
     let workspace_root = resolve_workspace_root(&config, workspace_directory.as_deref())?;
     let RuntimeToolCatalog {
         available_tools,
@@ -2507,6 +2642,7 @@ pub async fn stream_message(
     let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
     prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
     prepend_tool_usage_guidance(&mut context_messages);
+    prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
 
     let mut always_allowed_tools = HashSet::<String>::new();
     let mut last_tool_signature: Option<String> = None;

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -42,6 +43,44 @@ function cleanAndCopyDir(srcDir, destDir) {
   fs.cpSync(srcDir, destDir, { recursive: true })
 }
 
+function sha256OfFile(filePath) {
+  if (!fs.existsSync(filePath)) return null
+  const content = fs.readFileSync(filePath)
+  return createHash('sha256').update(content).digest('hex')
+}
+
+function verifySidecarConsistency() {
+  const srcEntry = path.join(sidecarRoot, 'src', 'index.mjs')
+  const distEntry = path.join(sidecarRoot, 'dist', 'index.mjs')
+  const resourceEntry = path.join(sidecarResourceRoot, 'dist', 'index.mjs')
+  const srcHash = sha256OfFile(srcEntry)
+  const distHash = sha256OfFile(distEntry)
+  const resourceHash = sha256OfFile(resourceEntry)
+
+  if (!srcHash || !distHash || !resourceHash) {
+    console.warn('[prepare-sidecar] warning: sidecar consistency check skipped (missing file)')
+    return
+  }
+
+  const mismatches = []
+  if (srcHash !== distHash) {
+    mismatches.push('browser-sidecar/src/index.mjs != browser-sidecar/dist/index.mjs')
+  }
+  if (distHash !== resourceHash) {
+    mismatches.push('browser-sidecar/dist/index.mjs != src-tauri/resources/browser-sidecar/dist/index.mjs')
+  }
+
+  if (mismatches.length > 0) {
+    console.warn('[prepare-sidecar] warning: sidecar file hashes are inconsistent')
+    for (const line of mismatches) {
+      console.warn(`  - ${line}`)
+    }
+    return
+  }
+
+  console.log('[prepare-sidecar] sidecar hash check passed')
+}
+
 function copyBundledNode() {
   fs.mkdirSync(binariesRoot, { recursive: true })
   const triple = detectTargetTriple()
@@ -64,6 +103,7 @@ function main() {
 
   console.log('[prepare-sidecar] copying sidecar resources')
   cleanAndCopyDir(path.join(sidecarRoot, 'dist'), path.join(sidecarResourceRoot, 'dist'))
+  verifySidecarConsistency()
 
   if (process.env.PETOOL_BROWSER_SKIP_NODE !== '1') {
     copyBundledNode()

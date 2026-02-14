@@ -18,6 +18,7 @@ pub struct Skill {
 pub enum SkillType {
     Rust,
     JavaScript,
+    Markdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,4 +41,19 @@ pub struct SkillManifest {
 
 fn default_entry_point() -> String {
     "index.js".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDiscoveryItem {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub repo_url: String,
+    pub repo_full_name: String,
+    pub repo_html_url: String,
+    pub source: String,
+    pub skill_path: Option<String>,
+    pub stars: u64,
+    pub updated_at: Option<String>,
+    pub installed: bool,
 }

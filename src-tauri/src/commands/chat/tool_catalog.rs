@@ -7,12 +7,12 @@ use super::{
     ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL, BROWSER_TOOL,
     CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, IMAGE_UNDERSTAND_TOOL,
     SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL, SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL,
-    SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL, TODO_WRITE_TOOL,
-    WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL, WORKSPACE_CODESEARCH_TOOL,
-    WORKSPACE_EDIT_TOOL, WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL, WORKSPACE_LIST_TOOL,
-    WORKSPACE_LSP_SYMBOLS_TOOL, WORKSPACE_PROCESS_LIST_TOOL, WORKSPACE_PROCESS_READ_TOOL,
-    WORKSPACE_PROCESS_START_TOOL, WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL,
-    WORKSPACE_RUN_TOOL, WORKSPACE_WRITE_TOOL,
+    SKILL_DISCOVER_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL,
+    TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL,
+    WORKSPACE_CODESEARCH_TOOL, WORKSPACE_EDIT_TOOL, WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL,
+    WORKSPACE_LIST_TOOL, WORKSPACE_LSP_SYMBOLS_TOOL, WORKSPACE_PROCESS_LIST_TOOL,
+    WORKSPACE_PROCESS_READ_TOOL, WORKSPACE_PROCESS_START_TOOL, WORKSPACE_PROCESS_TERMINATE_TOOL,
+    WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL, WORKSPACE_WRITE_TOOL,
 };
 
 fn register_runtime_tool(
@@ -322,12 +322,14 @@ pub(super) fn collect_skill_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTo
         &mut tools,
         &mut tool_map,
         SKILL_INSTALL_TOOL,
-        "Install a skill from a git repository URL so the assistant can use new capabilities."
+        "Install a skill from a git repository URL so the assistant can use new capabilities. \
+         Use only when user intent requires adding a capability and repository source is provided/approved."
             .to_string(),
         json!({
             "type": "object",
             "properties": {
-                "repo_url": { "type": "string" }
+                "repo_url": { "type": "string" },
+                "skill_path": { "type": "string", "description": "Optional relative path to skill directory inside the repository." }
             },
             "required": ["repo_url"]
         }),
@@ -337,8 +339,28 @@ pub(super) fn collect_skill_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTo
     register_runtime_tool(
         &mut tools,
         &mut tool_map,
+        SKILL_DISCOVER_TOOL,
+        "Discover installable skills from remote registries (OpenClaw/ClawHub-style SKILL.md first, with legacy skill.json compatibility). \
+         Uses SkillsMP API first when a SkillsMP key is configured in Settings, then falls back to GitHub code search. \
+         Use this when no installed skill clearly matches the task."
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query, e.g. 'word docx export'." },
+                "limit": { "type": "integer", "description": "Number of results, default 8, max 20." }
+            }
+        }),
+        RuntimeTool::SkillDiscover,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
         SKILL_LIST_TOOL,
-        "List installed skills and their enabled status.".to_string(),
+        "List installed skills and their enabled status. \
+         Always use this first when task requirements are unfamiliar, specialized, or uncertain."
+            .to_string(),
         json!({
             "type": "object",
             "properties": {}
@@ -350,7 +372,8 @@ pub(super) fn collect_skill_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTo
         &mut tools,
         &mut tool_map,
         SKILL_EXECUTE_TOOL,
-        "Execute an installed skill by id or name.".to_string(),
+        "Execute an installed skill by id or name after selecting candidate(s) from skills_list."
+            .to_string(),
         json!({
             "type": "object",
             "properties": {
@@ -489,13 +512,13 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). For reliable clicking/typing: call action=snapshot first, then pass params.ref into action=act (kind=click/type). snapshot supports params.max_refs to reduce noise.".to_string(),
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions.".to_string(),
         json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "status|start|stop|profiles|tabs|open|focus|close|navigate|snapshot|screenshot|act|console|errors|requests|response_body|pdf|cookies_get|cookies_set|cookies_clear|storage_get|storage_set|storage_clear|set_offline|set_headers|set_credentials|set_geolocation|set_media|set_timezone|set_locale|set_device|trace_start|trace_stop|evaluate|reset_profile"
+                    "description": "status|start|stop|profiles|tabs|open|focus|close|navigate|snapshot|screenshot|act|act_batch|console|errors|requests|response_body|pdf|cookies_get|cookies_set|cookies_clear|storage_get|storage_set|storage_clear|set_offline|set_headers|set_credentials|set_geolocation|set_media|set_timezone|set_locale|set_device|trace_start|trace_stop|evaluate|reset_profile"
                 },
                 "profile": { "type": "string" },
                 "target_id": { "type": "string" },

@@ -100,6 +100,7 @@ async fn main() {
             mcp::read_resource,
             // Skills commands
             skills::list_skills,
+            skills::discover_skills,
             skills::install_skill,
             skills::uninstall_skill,
             skills::execute_skill,

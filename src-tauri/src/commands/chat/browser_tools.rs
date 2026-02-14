@@ -52,7 +52,8 @@ pub(super) async fn execute_browser_navigate_compat(arguments: &Value) -> Result
         target_id,
         params: json!({
             "url": url,
-            "max_links": max_links
+            "max_links": max_links,
+            "include_links": true
         }),
     };
 

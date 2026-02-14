@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 export interface Config {
   api_key?: string
   api_base?: string
+  skillsmp_api_key?: string
+  skillsmp_api_base?: string
   model: string
   system_prompt?: string
   work_directory?: string
@@ -14,6 +16,7 @@ export interface Config {
   mcp_servers: McpServerConfig[]
   tool_permissions: Record<string, ToolPermissionAction>
   tool_path_permissions: ToolPathPermissionRule[]
+  auto_approve_tool_requests: boolean
   browser: BrowserConfig
 }
 
@@ -54,6 +57,9 @@ export interface BrowserConfig {
   default_profile: string
   evaluate_enabled: boolean
   allow_private_network: boolean
+  performance_preset: 'safe' | 'balanced' | 'fast'
+  capture_response_bodies: boolean
+  default_act_timeout_ms: number
   operation_timeout_ms: number
   profiles: Record<string, BrowserProfileConfig>
 }
@@ -61,6 +67,8 @@ export interface BrowserConfig {
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
+    skillsmp_api_key: '',
+    skillsmp_api_base: 'https://skillsmp.com/api/v1',
     model: 'glm-5',
     system_prompt: '',
     conversation_workspaces: {},
@@ -69,11 +77,15 @@ export const useConfigStore = defineStore('config', () => {
     mcp_servers: [],
     tool_permissions: {},
     tool_path_permissions: [],
+    auto_approve_tool_requests: false,
     browser: {
       enabled: true,
       default_profile: 'openclaw',
       evaluate_enabled: false,
       allow_private_network: false,
+      performance_preset: 'balanced',
+      capture_response_bodies: false,
+      default_act_timeout_ms: 1400,
       operation_timeout_ms: 20000,
       profiles: {
         openclaw: {

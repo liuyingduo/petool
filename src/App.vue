@@ -459,6 +459,7 @@ const TOOL_STEP_LABELS: Record<string, string> = {
   workspace_move_file: '移动文件',
   workspace_copy_file: '复制文件',
   workspace_create_directory: '创建目录',
+  skills_discover: '发现技能',
   skills_plan: '规划步骤',
   skills_execute: '执行技能'
 }

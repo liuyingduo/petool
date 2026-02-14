@@ -13,14 +13,38 @@ fn default_browser_default_profile() -> String {
     "openclaw".to_string()
 }
 
+fn default_skillsmp_api_base() -> String {
+    "https://skillsmp.com/api/v1".to_string()
+}
+
+fn default_skillsmp_api_base_option() -> Option<String> {
+    Some(default_skillsmp_api_base())
+}
+
 fn default_browser_operation_timeout_ms() -> u64 {
     20_000
+}
+
+fn default_browser_performance_preset() -> String {
+    "balanced".to_string()
+}
+
+fn default_browser_capture_response_bodies() -> bool {
+    false
+}
+
+fn default_browser_default_act_timeout_ms() -> u64 {
+    1_400
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
+    #[serde(default)]
+    pub skillsmp_api_key: Option<String>,
+    #[serde(default = "default_skillsmp_api_base_option")]
+    pub skillsmp_api_base: Option<String>,
     pub model: String,
     pub system_prompt: Option<String>,
     pub work_directory: Option<String>,
@@ -34,6 +58,8 @@ pub struct Config {
     pub tool_permissions: HashMap<String, ToolPermissionAction>,
     #[serde(default)]
     pub tool_path_permissions: Vec<ToolPathPermissionRule>,
+    #[serde(default)]
+    pub auto_approve_tool_requests: bool,
     #[serde(default)]
     pub browser: BrowserConfig,
 }
@@ -135,6 +161,12 @@ pub struct BrowserConfig {
     pub evaluate_enabled: bool,
     #[serde(default)]
     pub allow_private_network: bool,
+    #[serde(default = "default_browser_performance_preset")]
+    pub performance_preset: String,
+    #[serde(default = "default_browser_capture_response_bodies")]
+    pub capture_response_bodies: bool,
+    #[serde(default = "default_browser_default_act_timeout_ms")]
+    pub default_act_timeout_ms: u64,
     #[serde(default = "default_browser_operation_timeout_ms")]
     pub operation_timeout_ms: u64,
     #[serde(default = "default_browser_profiles")]
@@ -154,6 +186,9 @@ impl Default for BrowserConfig {
             default_profile: default_browser_default_profile(),
             evaluate_enabled: false,
             allow_private_network: false,
+            performance_preset: default_browser_performance_preset(),
+            capture_response_bodies: default_browser_capture_response_bodies(),
+            default_act_timeout_ms: default_browser_default_act_timeout_ms(),
             operation_timeout_ms: default_browser_operation_timeout_ms(),
             profiles: default_browser_profiles(),
         }
@@ -165,6 +200,8 @@ impl Default for Config {
         Self {
             api_key: None,
             api_base: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
+            skillsmp_api_key: None,
+            skillsmp_api_base: Some(default_skillsmp_api_base()),
             model: "glm-5".to_string(),
             system_prompt: None,
             work_directory: None,
@@ -174,6 +211,7 @@ impl Default for Config {
             mcp_servers: Vec::new(),
             tool_permissions: HashMap::new(),
             tool_path_permissions: Vec::new(),
+            auto_approve_tool_requests: false,
             browser: BrowserConfig::default(),
         }
     }
@@ -192,8 +230,16 @@ mod tests {
     #[test]
     fn default_config_includes_browser_defaults() {
         let config = Config::default();
+        assert!(!config.auto_approve_tool_requests);
+        assert_eq!(
+            config.skillsmp_api_base,
+            Some("https://skillsmp.com/api/v1".to_string())
+        );
         assert!(config.browser.enabled);
         assert_eq!(config.browser.default_profile, "openclaw");
+        assert_eq!(config.browser.performance_preset, "balanced");
+        assert!(!config.browser.capture_response_bodies);
+        assert_eq!(config.browser.default_act_timeout_ms, 1_400);
         assert_eq!(config.browser.operation_timeout_ms, 20_000);
         assert!(config.browser.profiles.contains_key("openclaw"));
         let profile = config.browser.profiles.get("openclaw").unwrap();

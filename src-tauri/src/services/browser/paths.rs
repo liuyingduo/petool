@@ -98,8 +98,15 @@ fn candidate_sidecar_entries() -> Vec<PathBuf> {
     }
 
     if let Ok(cwd) = env::current_dir() {
-        candidates.push(cwd.join("browser-sidecar").join("dist").join("index.mjs"));
-        candidates.push(cwd.join("browser-sidecar").join("src").join("index.mjs"));
+        let src_entry = cwd.join("browser-sidecar").join("src").join("index.mjs");
+        let dist_entry = cwd.join("browser-sidecar").join("dist").join("index.mjs");
+        if prefer_src_sidecar_in_dev() {
+            candidates.push(src_entry);
+            candidates.push(dist_entry);
+        } else {
+            candidates.push(dist_entry);
+            candidates.push(src_entry);
+        }
     }
 
     if let Ok(exe) = env::current_exe() {
@@ -129,6 +136,24 @@ fn candidate_sidecar_entries() -> Vec<PathBuf> {
     }
 
     candidates
+}
+
+fn env_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn prefer_src_sidecar_in_dev() -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    env_truthy("PETOOL_BROWSER_DEV_USE_SRC_SIDECAR")
 }
 
 pub fn resolve_sidecar_entry() -> Result<PathBuf> {

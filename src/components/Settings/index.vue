@@ -25,6 +25,22 @@
             />
           </el-form-item>
 
+          <el-form-item label="SkillsMP Key">
+            <el-input
+              v-model="localConfig.skillsmp_api_key"
+              type="password"
+              placeholder="Optional: sk_live_..."
+              show-password
+            />
+          </el-form-item>
+
+          <el-form-item label="SkillsMP API">
+            <el-input
+              v-model="localConfig.skillsmp_api_base"
+              placeholder="https://skillsmp.com/api/v1"
+            />
+          </el-form-item>
+
           <el-form-item label="Model">
             <el-select v-model="localConfig.model" style="width: 100%">
               <el-option label="GLM-5" value="glm-5" />
@@ -86,6 +102,13 @@
               <el-radio value="full">Full</el-radio>
             </el-radio-group>
           </el-form-item>
+
+          <el-form-item label="Auto Approvals">
+            <el-switch v-model="localConfig.auto_approve_tool_requests" />
+            <div class="setting-hint">
+              When enabled, tool calls run without asking every time (explicit deny rules still apply).
+            </div>
+          </el-form-item>
         </el-form>
       </el-tab-pane>
 
@@ -113,6 +136,28 @@
 
           <el-form-item label="Allow Private Network">
             <el-switch v-model="localConfig.browser.allow_private_network" />
+          </el-form-item>
+
+          <el-form-item label="Performance Preset">
+            <el-select v-model="localConfig.browser.performance_preset" style="width: 220px">
+              <el-option label="Safe" value="safe" />
+              <el-option label="Balanced" value="balanced" />
+              <el-option label="Fast" value="fast" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="Capture Response Bodies">
+            <el-switch v-model="localConfig.browser.capture_response_bodies" />
+          </el-form-item>
+
+          <el-form-item label="Default Act Timeout (ms)">
+            <el-input-number
+              v-model="localConfig.browser.default_act_timeout_ms"
+              :min="250"
+              :max="20000"
+              :step="50"
+              style="width: 220px"
+            />
           </el-form-item>
 
           <el-form-item label="Timeout (ms)">
@@ -321,6 +366,9 @@ const defaultBrowserConfig: BrowserConfig = {
   default_profile: 'openclaw',
   evaluate_enabled: false,
   allow_private_network: false,
+  performance_preset: 'balanced',
+  capture_response_bodies: false,
+  default_act_timeout_ms: 1400,
   operation_timeout_ms: 20000,
   profiles: {
     openclaw: {
@@ -341,6 +389,8 @@ const defaultBrowserConfig: BrowserConfig = {
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
+  skillsmp_api_key: '',
+  skillsmp_api_base: 'https://skillsmp.com/api/v1',
   model: 'glm-5',
   system_prompt: '',
   work_directory: '',
@@ -350,6 +400,7 @@ const defaultConfig: Config = {
   mcp_servers: [],
   tool_permissions: {},
   tool_path_permissions: [],
+  auto_approve_tool_requests: false,
   browser: deepClone(defaultBrowserConfig)
 }
 
@@ -386,6 +437,25 @@ function ensureBrowserConfig(target: Config) {
   if (!target.browser) {
     target.browser = deepClone(defaultBrowserConfig)
   }
+  if (!target.browser.performance_preset) {
+    target.browser.performance_preset = 'balanced'
+  }
+  if (!['safe', 'balanced', 'fast'].includes(target.browser.performance_preset)) {
+    target.browser.performance_preset = 'balanced'
+  }
+  if (target.browser.capture_response_bodies === undefined) {
+    target.browser.capture_response_bodies = false
+  }
+  if (
+    target.browser.default_act_timeout_ms === undefined ||
+    Number.isNaN(Number(target.browser.default_act_timeout_ms))
+  ) {
+    target.browser.default_act_timeout_ms = 1400
+  }
+  target.browser.default_act_timeout_ms = Math.max(
+    250,
+    Math.min(20000, Math.trunc(target.browser.default_act_timeout_ms))
+  )
   if (!target.browser.profiles || Object.keys(target.browser.profiles).length === 0) {
     target.browser.profiles = deepClone(defaultBrowserConfig.profiles)
   }
@@ -620,5 +690,12 @@ async function resetBrowserProfile() {
 .browser-actions {
   display: flex;
   gap: 8px;
+}
+
+.setting-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
 }
 </style>
