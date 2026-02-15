@@ -33,7 +33,7 @@
       </div>
 
       <!-- Loading indicator -->
-      <div v-if="chatStore.streaming" class="message assistant">
+      <div v-if="chatStore.isConversationStreaming(chatStore.currentConversationId)" class="message assistant">
         <div class="message-avatar">
           <el-icon><Cpu /></el-icon>
         </div>
@@ -90,7 +90,7 @@
         <el-button
           type="primary"
           circle
-          :loading="chatStore.streaming"
+          :loading="chatStore.isConversationStreaming(chatStore.currentConversationId)"
           @click="sendMessage"
         >
           <el-icon><Promotion /></el-icon>
@@ -135,15 +135,30 @@ function toolTextPreview(value: string) {
 
 // Listen for streaming events
 listen('chat-chunk', (event) => {
-  const chunk = event.payload as string
-  chatStore.updateLastMessage(chatStore.currentConversationId!, chunk)
+  let conversationId: string | null = chatStore.currentConversationId
+  let chunk = ''
+  if (typeof event.payload === 'string') {
+    chunk = event.payload
+  } else if (event.payload && typeof event.payload === 'object') {
+    const payload = event.payload as { conversationId?: string; chunk?: string }
+    conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
+    chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
+  }
+  if (!conversationId || !chunk) return
+  chatStore.updateLastMessage(conversationId, chunk)
 }).catch((error) => {
   console.error('Failed to subscribe chat-chunk:', error)
 })
 
-listen('chat-end', () => {
-  const conversationId = chatStore.currentConversationId
-  chatStore.streaming = false
+listen('chat-end', (event) => {
+  let conversationId: string | null = chatStore.currentConversationId
+  if (event.payload && typeof event.payload === 'object') {
+    const payload = event.payload as { conversationId?: string }
+    conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
+  }
+  if (conversationId) {
+    chatStore.setConversationStreaming(conversationId, false)
+  }
   reasoningStream.value = ''
   toolStreamItems.value = []
   if (conversationId) {
@@ -154,7 +169,14 @@ listen('chat-end', () => {
 })
 
 listen('chat-reasoning', (event) => {
-  const chunk = event.payload as string
+  let chunk = ''
+  if (typeof event.payload === 'string') {
+    chunk = event.payload
+  } else if (event.payload && typeof event.payload === 'object') {
+    const payload = event.payload as { conversationId?: string; chunk?: string }
+    if (payload.conversationId && payload.conversationId !== chatStore.currentConversationId) return
+    chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
+  }
   if (!chunk) return
   reasoningStream.value += chunk
 }).catch((error) => {
@@ -163,11 +185,13 @@ listen('chat-reasoning', (event) => {
 
 listen('chat-tool-call', (event) => {
   const payload = event.payload as {
+    conversationId?: string
     index?: number
     toolCallId?: string
     name?: string
     argumentsChunk?: string
   }
+  if (payload.conversationId && payload.conversationId !== chatStore.currentConversationId) return
 
   const id = payload.toolCallId || `tool-${payload.index ?? 0}`
   const existing = toolStreamItems.value.find((item) => item.id === id)
@@ -194,12 +218,14 @@ listen('chat-tool-call', (event) => {
 
 listen('chat-tool-result', (event) => {
   const payload = event.payload as {
+    conversationId?: string
     index?: number
     toolCallId?: string
     name?: string
     result?: string | null
     error?: string | null
   }
+  if (payload.conversationId && payload.conversationId !== chatStore.currentConversationId) return
 
   const id = payload.toolCallId || `tool-${payload.index ?? 0}`
   let item = toolStreamItems.value.find((entry) => entry.id === id)
@@ -245,7 +271,7 @@ function getErrorMessage(error: unknown): string {
 
 async function sendMessage() {
   const content = inputMessage.value.trim()
-  if (!content || chatStore.streaming) return
+  if (!content || chatStore.isConversationStreaming(chatStore.currentConversationId)) return
 
   inputMessage.value = ''
   reasoningStream.value = ''
@@ -271,7 +297,7 @@ async function sendMessage() {
   }
   chatStore.addMessage(chatStore.currentConversationId!, assistantMsg)
 
-  chatStore.streaming = true
+  chatStore.setConversationStreaming(chatStore.currentConversationId!, true)
 
   try {
     await invoke('stream_message', {
@@ -280,7 +306,7 @@ async function sendMessage() {
       workspaceDirectory: fsStore.currentDirectory || configStore.config.work_directory || null
     })
   } catch (error) {
-    chatStore.streaming = false
+    chatStore.setConversationStreaming(chatStore.currentConversationId!, false)
     console.error('stream_message failed:', error)
     ElMessage.error(getErrorMessage(error))
   }

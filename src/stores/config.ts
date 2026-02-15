@@ -7,6 +7,11 @@ export interface Config {
   api_base?: string
   clawhub_api_key?: string
   clawhub_api_base?: string
+  ark_api_key?: string
+  ark_api_base?: string
+  image_model: string
+  image_size: string
+  image_watermark: boolean
   model: string
   system_prompt?: string
   work_directory?: string
@@ -69,6 +74,11 @@ export const useConfigStore = defineStore('config', () => {
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
     clawhub_api_key: '',
     clawhub_api_base: 'https://clawhub.ai',
+    ark_api_key: '',
+    ark_api_base: 'https://ark.cn-beijing.volces.com/api/v3',
+    image_model: 'doubao-seedream-4-5-251128',
+    image_size: '2K',
+    image_watermark: true,
     model: 'glm-5',
     system_prompt: '',
     conversation_workspaces: {},

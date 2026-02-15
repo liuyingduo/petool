@@ -77,6 +77,8 @@ async fn main() {
             // Chat commands
             chat::send_message,
             chat::stream_message,
+            chat::stop_stream,
+            chat::generate_image,
             chat::resolve_tool_approval,
             chat::get_conversations,
             chat::get_messages,

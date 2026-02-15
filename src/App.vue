@@ -71,7 +71,7 @@
               type="button"
               title="删除会话"
               aria-label="删除会话"
-              :disabled="chatStore.streaming && conv.id === chatStore.currentConversationId"
+              :disabled="chatStore.isConversationStreaming(conv.id)"
               @click.stop="handleDeleteConversation(conv.id)"
             >
               <span class="material-icons-round">delete</span>
@@ -314,7 +314,7 @@
             <button
               class="model-trigger"
               type="button"
-              :disabled="createDialogVisible || chatStore.streaming"
+              :disabled="createDialogVisible || isCurrentConversationStreaming"
               aria-label="选择模型"
             >
               <span class="model-dot"></span>
@@ -336,22 +336,40 @@
               </button>
             </div>
           </div>
-          <button class="attach-btn" @click="handleSelectUploadFiles" :disabled="createDialogVisible || chatStore.streaming">
+          <button class="attach-btn" @click="handleSelectUploadFiles" :disabled="createDialogVisible || isCurrentConversationStreaming">
             <span class="material-icons-round">attach_file</span>
+          </button>
+          <button
+            class="image-btn"
+            :disabled="
+              createDialogVisible ||
+              !chatStore.currentConversationId ||
+              isCurrentConversationStreaming ||
+              generatingImage ||
+              !canGenerateImagePrompt
+            "
+            @click="generateImage"
+          >
+            <span class="material-icons-round">{{ generatingImage ? 'hourglass_top' : 'image' }}</span>
           </button>
           <input
             v-model="inputMessage"
             type="text"
             placeholder="想让我做什么？"
-            :disabled="createDialogVisible || !chatStore.currentConversationId || chatStore.streaming"
+            :disabled="createDialogVisible || !chatStore.currentConversationId || isCurrentConversationStreaming"
             @keydown.enter.prevent="sendMessage"
           />
           <button
             class="send-btn"
-            :disabled="createDialogVisible || !chatStore.currentConversationId || chatStore.streaming || !canSendMessage"
-            @click="sendMessage"
+            :disabled="
+              createDialogVisible ||
+              !chatStore.currentConversationId ||
+              (isCurrentConversationStreaming ? pausingStream : !canSendMessage)
+            "
+            @click="isCurrentConversationStreaming ? pauseStream() : sendMessage()"
           >
-            <span class="material-icons-round">arrow_upward</span>
+            <span v-if="isCurrentConversationStreaming" class="send-stop-square" aria-hidden="true"></span>
+            <span v-else class="material-icons-round">arrow_upward</span>
           </button>
         </div>
         </section>
@@ -401,6 +419,12 @@ interface PathInfo {
   extension?: string
 }
 
+interface GenerateImageResponse {
+  userMessage: Message
+  assistantMessage: Message
+  imageUrl: string
+}
+
 const MAX_INLINE_FILE_SIZE = 1_500_000
 const MAX_INLINE_TEXT_CHARS = 80_000
 const MAX_TOTAL_INLINE_CHARS = 140_000
@@ -429,9 +453,11 @@ const createConversationWorkspaceDirectory = ref<string | null>(null)
 const pendingUploads = ref<UploadAttachment[]>([])
 const workspaceRef = ref<HTMLElement | null>(null)
 const messageListRef = ref<HTMLElement | null>(null)
-const activeAssistantMessageId = ref<string | null>(null)
+const activeAssistantMessageIdByConversation = ref<Record<string, string>>({})
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
 const resolvingToolApproval = ref(false)
+const pausingStream = ref(false)
+const generatingImage = ref(false)
 const isWindowMaximized = ref(false)
 const unlistenFns: Array<() => void> = []
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 72
@@ -464,6 +490,23 @@ const TOOL_STEP_LABELS: Record<string, string> = {
   skills_execute: '执行技能'
 }
 
+const activeAssistantMessageId = computed<string | null>({
+  get: () => {
+    const conversationId = chatStore.currentConversationId
+    if (!conversationId) return null
+    return activeAssistantMessageIdByConversation.value[conversationId] || null
+  },
+  set: (value) => {
+    const conversationId = chatStore.currentConversationId
+    if (!conversationId) return
+    if (!value) {
+      delete activeAssistantMessageIdByConversation.value[conversationId]
+      return
+    }
+    activeAssistantMessageIdByConversation.value[conversationId] = value
+  }
+})
+
 const {
   reasoningByMessage,
   toolStreamItems,
@@ -494,6 +537,10 @@ const {
   activeAssistantMessageId,
   toolStepLabels: TOOL_STEP_LABELS
 })
+
+const isCurrentConversationStreaming = computed(() =>
+  chatStore.isConversationStreaming(chatStore.currentConversationId)
+)
 
 const conversationModelLabel = computed(() => {
   const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
@@ -558,6 +605,7 @@ function scheduleScrollMessageListToBottom(force = false) {
 watch(
   () => chatStore.currentConversationId,
   () => {
+    pausingStream.value = false
     shouldStickToMessageBottom.value = true
     scheduleScrollMessageListToBottom(true)
   },
@@ -618,6 +666,15 @@ watch(
     scheduleScrollMessageListToBottom(true)
   },
   { flush: 'post' }
+)
+
+watch(
+  isCurrentConversationStreaming,
+  (streaming) => {
+    if (!streaming) {
+      pausingStream.value = false
+    }
+  }
 )
 
 function normalizeWorkspaceDirectory(value: string | null | undefined) {
@@ -694,6 +751,10 @@ const recentFolders = computed(() => {
 
 const canSendMessage = computed(() => {
   return inputMessage.value.trim().length > 0 || pendingUploads.value.length > 0
+})
+
+const canGenerateImagePrompt = computed(() => {
+  return inputMessage.value.trim().length > 0
 })
 
 const activeToolApproval = computed(() => {
@@ -822,11 +883,18 @@ onMounted(async () => {
       onToolApprovalRequest: (request) => {
         pendingToolApproval.value = request
       },
-      onStreamEnd: () => {
-        persistToolItemsForActiveMessage()
-        collapseActiveReasoning()
-        pendingToolApproval.value = null
-        resolvingToolApproval.value = false
+      onStreamEnd: (conversationId) => {
+        if (!conversationId) return
+        if (pendingToolApproval.value?.conversationId === conversationId) {
+          pendingToolApproval.value = null
+          resolvingToolApproval.value = false
+        }
+        if (conversationId === chatStore.currentConversationId) {
+          persistToolItemsForActiveMessage()
+          collapseActiveReasoning()
+          pausingStream.value = false
+        }
+        delete activeAssistantMessageIdByConversation.value[conversationId]
       }
     }))
   )
@@ -1001,11 +1069,12 @@ async function handleSelectConversation(id: string) {
   await chatStore.loadMessages(id)
   hydrateConversationArtifacts(id)
   await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(id))
-  chatStore.streaming = false
-  activeAssistantMessageId.value = null
+  generatingImage.value = false
   toolStreamItems.value = []
-  pendingToolApproval.value = null
-  resolvingToolApproval.value = false
+  if (pendingToolApproval.value?.conversationId !== id) {
+    pendingToolApproval.value = null
+    resolvingToolApproval.value = false
+  }
   createDialogVisible.value = false
 }
 
@@ -1035,12 +1104,13 @@ async function handleDeleteConversation(id: string) {
   try {
     await chatStore.deleteConversation(id)
     await persistConversationWorkspaceDirectory(id, null)
+    delete activeAssistantMessageIdByConversation.value[id]
 
     if (chatStore.conversations.length === 0) {
       chatStore.setCurrentConversation(null)
       await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
-      chatStore.streaming = false
-      activeAssistantMessageId.value = null
+      pausingStream.value = false
+      generatingImage.value = false
       toolStreamItems.value = []
       pendingToolApproval.value = null
       resolvingToolApproval.value = false
@@ -1097,7 +1167,7 @@ async function handleCreateConversation() {
 async function sendMessage() {
   const content = inputMessage.value.trim()
   const uploads = [...pendingUploads.value]
-  if ((!content && uploads.length === 0) || !chatStore.currentConversationId || chatStore.streaming) return
+  if ((!content && uploads.length === 0) || !chatStore.currentConversationId || isCurrentConversationStreaming.value) return
 
   const conversationId = chatStore.currentConversationId
   const messageContentForModel = buildMessageForModel(content, uploads)
@@ -1117,7 +1187,9 @@ async function sendMessage() {
   inputMessage.value = ''
   pendingUploads.value = []
   toolStreamItems.value = []
-  pendingToolApproval.value = null
+  if (pendingToolApproval.value?.conversationId === conversationId) {
+    pendingToolApproval.value = null
+  }
 
   const userMsg: Message = {
     id: Date.now().toString(),
@@ -1138,8 +1210,9 @@ async function sendMessage() {
   chatStore.addMessage(conversationId, assistantMsg)
   initializeAssistantArtifacts(assistantMsg.id)
 
-  activeAssistantMessageId.value = assistantMsg.id
-  chatStore.streaming = true
+  activeAssistantMessageIdByConversation.value[conversationId] = assistantMsg.id
+  chatStore.setConversationStreaming(conversationId, true)
+  pausingStream.value = false
 
   try {
     await invoke('stream_message', {
@@ -1148,16 +1221,57 @@ async function sendMessage() {
       workspaceDirectory
     })
   } catch (error) {
-    chatStore.streaming = false
+    chatStore.setConversationStreaming(conversationId, false)
     removePendingAssistantMessage(conversationId, assistantMsg.id)
-    activeAssistantMessageId.value = null
-    toolStreamItems.value = []
+    delete activeAssistantMessageIdByConversation.value[conversationId]
     clearAssistantArtifacts(assistantMsg.id)
-    pendingToolApproval.value = null
-    resolvingToolApproval.value = false
-    inputMessage.value = content
-    pendingUploads.value = uploads
+    if (pendingToolApproval.value?.conversationId === conversationId) {
+      pendingToolApproval.value = null
+      resolvingToolApproval.value = false
+    }
+    if (chatStore.currentConversationId === conversationId) {
+      pausingStream.value = false
+      toolStreamItems.value = []
+      inputMessage.value = content
+      pendingUploads.value = uploads
+    }
     ElMessage.error(getErrorMessage(error, '发送消息失败'))
+  }
+}
+
+async function pauseStream() {
+  const conversationId = chatStore.currentConversationId
+  if (!conversationId || !isCurrentConversationStreaming.value || pausingStream.value) return
+
+  pausingStream.value = true
+  try {
+    await invoke('stop_stream', { conversationId })
+  } catch (error) {
+    pausingStream.value = false
+    ElMessage.error(getErrorMessage(error, '暂停失败'))
+  }
+}
+
+async function generateImage() {
+  const prompt = inputMessage.value.trim()
+  const conversationId = chatStore.currentConversationId
+  if (!prompt || !conversationId || isCurrentConversationStreaming.value || generatingImage.value) return
+
+  generatingImage.value = true
+  inputMessage.value = ''
+
+  try {
+    const result = await invoke<GenerateImageResponse>('generate_image', {
+      conversationId,
+      prompt
+    })
+    chatStore.addMessage(conversationId, result.userMessage)
+    chatStore.addMessage(conversationId, result.assistantMessage)
+  } catch (error) {
+    inputMessage.value = prompt
+    ElMessage.error(getErrorMessage(error, '文生图失败'))
+  } finally {
+    generatingImage.value = false
   }
 }
 

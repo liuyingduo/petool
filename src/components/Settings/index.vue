@@ -41,6 +41,42 @@
             />
           </el-form-item>
 
+          <el-divider content-position="left">Image Generation (Doubao)</el-divider>
+
+          <el-form-item label="ARK API Key">
+            <el-input
+              v-model="localConfig.ark_api_key"
+              type="password"
+              placeholder="Optional: use different key for image generation"
+              show-password
+            />
+          </el-form-item>
+
+          <el-form-item label="ARK API Base">
+            <el-input
+              v-model="localConfig.ark_api_base"
+              placeholder="https://ark.cn-beijing.volces.com/api/v3"
+            />
+          </el-form-item>
+
+          <el-form-item label="Image Model">
+            <el-input
+              v-model="localConfig.image_model"
+              placeholder="doubao-seedream-4-5-251128"
+            />
+          </el-form-item>
+
+          <el-form-item label="Image Size">
+            <el-input
+              v-model="localConfig.image_size"
+              placeholder="2K"
+            />
+          </el-form-item>
+
+          <el-form-item label="Image Watermark">
+            <el-switch v-model="localConfig.image_watermark" />
+          </el-form-item>
+
           <el-form-item label="Model">
             <el-select v-model="localConfig.model" style="width: 100%">
               <el-option label="GLM-5" value="glm-5" />
@@ -391,6 +427,11 @@ const defaultConfig: Config = {
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
   clawhub_api_key: '',
   clawhub_api_base: 'https://clawhub.ai',
+  ark_api_key: '',
+  ark_api_base: 'https://ark.cn-beijing.volces.com/api/v3',
+  image_model: 'doubao-seedream-4-5-251128',
+  image_size: '2K',
+  image_watermark: true,
   model: 'glm-5',
   system_prompt: '',
   work_directory: '',

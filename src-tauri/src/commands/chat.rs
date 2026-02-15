@@ -19,7 +19,8 @@ use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::{Emitter, State, Window};
 use tokio::process::Command as TokioCommand;
@@ -37,9 +38,36 @@ type ToolApprovalSender = oneshot::Sender<ToolApprovalDecision>;
 
 static TOOL_APPROVAL_WAITERS: OnceLock<tokio::sync::Mutex<HashMap<String, ToolApprovalSender>>> =
     OnceLock::new();
+static STREAM_STOP_FLAGS: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    OnceLock::new();
 
 fn tool_approval_waiters() -> &'static tokio::sync::Mutex<HashMap<String, ToolApprovalSender>> {
     TOOL_APPROVAL_WAITERS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn stream_stop_flags() -> &'static tokio::sync::Mutex<HashMap<String, Arc<AtomicBool>>> {
+    STREAM_STOP_FLAGS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+async fn register_stream_stop_flag(conversation_id: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut flags = stream_stop_flags().lock().await;
+    flags.insert(conversation_id.to_string(), flag.clone());
+    flag
+}
+
+async fn clear_stream_stop_flag(conversation_id: &str) {
+    let mut flags = stream_stop_flags().lock().await;
+    flags.remove(conversation_id);
+}
+
+async fn request_stream_stop(conversation_id: &str) -> bool {
+    let flags = stream_stop_flags().lock().await;
+    if let Some(flag) = flags.get(conversation_id) {
+        flag.store(true, Ordering::Relaxed);
+        return true;
+    }
+    false
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -58,6 +86,14 @@ struct ToolApprovalRequestPayload {
     tool_call_id: String,
     tool_name: String,
     arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateImageResponse {
+    user_message: Message,
+    assistant_message: Message,
+    image_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +184,9 @@ const DEFAULT_WEB_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_WEB_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
 const DEFAULT_EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
+const DEFAULT_ARK_API_BASE: &str = "https://ark.cn-beijing.volces.com/api/v3";
 const REPEATED_TOOL_GUARD_TEXT: &str = "Detected repeated identical tool calls from the model. Automatic tool loop was stopped. Please provide a more specific target (file/directory) and try again.";
+const STREAM_PAUSED_TEXT: &str = "（已暂停）";
 
 #[derive(Debug, Clone)]
 enum RuntimeTool {
@@ -477,10 +515,13 @@ async fn build_runtime_tool_catalog(
 async fn run_stream_round(
     llm_service: &LlmService,
     window: &Window,
+    conversation_id: &str,
     model: &str,
     context_messages: Vec<ChatMessage>,
     available_tools: &[ChatTool],
+    stop_flag: Arc<AtomicBool>,
 ) -> Result<LlmStreamResult, String> {
+    let conversation_id_for_stream = conversation_id.to_string();
     let window_for_stream = window.clone();
     llm_service
         .chat_stream_with_tools(
@@ -493,13 +534,26 @@ async fn run_stream_round(
             },
             move |event| match event {
                 LlmStreamEvent::Content(chunk) => {
-                    let _ = window_for_stream.emit("chat-chunk", &chunk);
+                    let _ = window_for_stream.emit(
+                        "chat-chunk",
+                        json!({
+                            "conversationId": conversation_id_for_stream.clone(),
+                            "chunk": chunk
+                        }),
+                    );
                 }
                 LlmStreamEvent::Reasoning(chunk) => {
-                    let _ = window_for_stream.emit("chat-reasoning", &chunk);
+                    let _ = window_for_stream.emit(
+                        "chat-reasoning",
+                        json!({
+                            "conversationId": conversation_id_for_stream.clone(),
+                            "chunk": chunk
+                        }),
+                    );
                 }
                 LlmStreamEvent::ToolCallDelta(delta) => {
                     let payload = json!({
+                        "conversationId": conversation_id_for_stream.clone(),
                         "index": delta.index,
                         "toolCallId": delta.id,
                         "name": delta.name,
@@ -508,6 +562,7 @@ async fn run_stream_round(
                     let _ = window_for_stream.emit("chat-tool-call", payload);
                 }
             },
+            move || stop_flag.load(Ordering::Relaxed),
         )
         .await
         .map_err(|e| e.to_string())
@@ -515,6 +570,7 @@ async fn run_stream_round(
 
 fn emit_tool_result_event(
     window: &Window,
+    conversation_id: &str,
     tool_call: &ChatToolCall,
     result: Option<&str>,
     error: Option<&str>,
@@ -523,6 +579,7 @@ fn emit_tool_result_event(
         .emit(
             "chat-tool-result",
             json!({
+                "conversationId": conversation_id,
                 "toolCallId": &tool_call.id,
                 "name": &tool_call.function.name,
                 "result": result,
@@ -2573,6 +2630,119 @@ pub async fn resolve_tool_approval(
 }
 
 #[tauri::command]
+pub async fn stop_stream(conversation_id: String) -> Result<bool, String> {
+    Ok(request_stream_stop(&conversation_id).await)
+}
+
+#[tauri::command]
+pub async fn generate_image(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    prompt: String,
+    model: Option<String>,
+    size: Option<String>,
+    watermark: Option<bool>,
+) -> Result<GenerateImageResponse, String> {
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
+
+    let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
+    let api_key = config
+        .ark_api_key
+        .clone()
+        .or(config.api_key.clone())
+        .ok_or("Image API key not set".to_string())?;
+    let api_base = config
+        .ark_api_base
+        .clone()
+        .or(config.api_base.clone())
+        .unwrap_or_else(|| DEFAULT_ARK_API_BASE.to_string());
+    let image_model = model.unwrap_or_else(|| config.image_model.clone());
+    let image_size = size.unwrap_or_else(|| config.image_size.clone());
+    let image_watermark = watermark.unwrap_or(config.image_watermark);
+
+    let llm_service = LlmService::new(api_key, Some(api_base));
+    let image_url = llm_service
+        .generate_image(&image_model, trimmed_prompt, &image_size, image_watermark)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let pool = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.db().pool().clone()
+    };
+
+    let user_message_id = Uuid::new_v4().to_string();
+    let user_created_at = Utc::now();
+    let user_content = format!("[文生图] {}", trimmed_prompt);
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, tool_calls, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&user_message_id)
+    .bind(&conversation_id)
+    .bind("user")
+    .bind(&user_content)
+    .bind(user_created_at.to_rfc3339())
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let assistant_message_id = Uuid::new_v4().to_string();
+    let assistant_created_at = Utc::now();
+    let assistant_content = format!("![{}]({})\n\n{}", trimmed_prompt, image_url, image_url);
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, tool_calls, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&assistant_message_id)
+    .bind(&conversation_id)
+    .bind("assistant")
+    .bind(&assistant_content)
+    .bind(assistant_created_at.to_rfc3339())
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
+        .bind(assistant_created_at.to_rfc3339())
+        .bind(&conversation_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let user_message = Message {
+        id: user_message_id,
+        conversation_id: conversation_id.clone(),
+        role: MessageRole::User,
+        content: user_content,
+        reasoning: None,
+        created_at: user_created_at,
+        tool_calls: None,
+    };
+
+    let assistant_message = Message {
+        id: assistant_message_id,
+        conversation_id,
+        role: MessageRole::Assistant,
+        content: assistant_content,
+        reasoning: None,
+        created_at: assistant_created_at,
+        tool_calls: None,
+    };
+
+    Ok(GenerateImageResponse {
+        user_message,
+        assistant_message,
+        image_url,
+    })
+}
+
+#[tauri::command]
 pub async fn send_message(
     state: State<'_, AppState>,
     conversation_id: String,
@@ -2616,131 +2786,185 @@ pub async fn stream_message(
     content: String,
     workspace_directory: Option<String>,
 ) -> Result<(), String> {
-    let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-    let api_key = config
-        .api_key
-        .clone()
-        .ok_or("API key not set".to_string())?;
-    let llm_service = LlmService::new(api_key, config.api_base.clone());
-    let mcp_state = mcp_manager.inner();
-    let skill_state = skill_manager.inner();
-    let skills_guidance = build_skills_usage_guidance(skill_state).await;
-    let workspace_root = resolve_workspace_root(&config, workspace_directory.as_deref())?;
-    let RuntimeToolCatalog {
-        available_tools,
-        tool_map,
-    } = build_runtime_tool_catalog(mcp_state, &config, &workspace_root).await?;
+    let stop_flag = register_stream_stop_flag(&conversation_id).await;
 
-    let pool = {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        guard.db().pool().clone()
-    };
-    let model_to_use = resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
+    let result = async {
+        let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
+        let api_key = config
+            .api_key
+            .clone()
+            .ok_or("API key not set".to_string())?;
+        let llm_service = LlmService::new(api_key, config.api_base.clone());
+        let mcp_state = mcp_manager.inner();
+        let skill_state = skill_manager.inner();
+        let skills_guidance = build_skills_usage_guidance(skill_state).await;
+        let workspace_root = resolve_workspace_root(&config, workspace_directory.as_deref())?;
+        let RuntimeToolCatalog {
+            available_tools,
+            tool_map,
+        } = build_runtime_tool_catalog(mcp_state, &config, &workspace_root).await?;
 
-    insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
-
-    let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
-    prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
-    prepend_tool_usage_guidance(&mut context_messages);
-    prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
-
-    let mut always_allowed_tools = HashSet::<String>::new();
-    let mut last_tool_signature: Option<String> = None;
-    let mut repeated_signature_rounds = 0usize;
-    loop {
-        let stream_result = run_stream_round(
-            &llm_service,
-            &window,
-            &model_to_use,
-            context_messages.clone(),
-            &available_tools,
-        )
-        .await?;
-
-        let assistant_content = stream_result.content.clone();
-        let assistant_reasoning = if stream_result.reasoning.trim().is_empty() {
-            None
-        } else {
-            Some(stream_result.reasoning.clone())
+        let pool = {
+            let guard = state.lock().map_err(|e| e.to_string())?;
+            guard.db().pool().clone()
         };
+        let model_to_use =
+            resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
 
-        if stream_result.tool_calls.is_empty() {
+        insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
+
+        let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
+        prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
+        prepend_tool_usage_guidance(&mut context_messages);
+        prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
+
+        let mut always_allowed_tools = HashSet::<String>::new();
+        let mut last_tool_signature: Option<String> = None;
+        let mut repeated_signature_rounds = 0usize;
+
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                window
+                    .emit("chat-end", json!({ "conversationId": conversation_id }))
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+
+            let stream_result = run_stream_round(
+                &llm_service,
+                &window,
+                &conversation_id,
+                &model_to_use,
+                context_messages.clone(),
+                &available_tools,
+                stop_flag.clone(),
+            )
+            .await?;
+
+            let assistant_content = stream_result.content.clone();
+            let assistant_reasoning = if stream_result.reasoning.trim().is_empty() {
+                None
+            } else {
+                Some(stream_result.reasoning.clone())
+            };
+
+            if stream_result.cancelled {
+                for tool_call in &stream_result.tool_calls {
+                    let _ = emit_tool_result_event(
+                        &window,
+                        &conversation_id,
+                        tool_call,
+                        None,
+                        Some("Paused by user"),
+                    );
+                }
+
+                let paused_content = if assistant_content.trim().is_empty() {
+                    window
+                        .emit(
+                            "chat-chunk",
+                            json!({
+                                "conversationId": conversation_id,
+                                "chunk": STREAM_PAUSED_TEXT
+                            }),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    STREAM_PAUSED_TEXT.to_string()
+                } else {
+                    assistant_content
+                };
+
+                insert_message(
+                    &pool,
+                    &conversation_id,
+                    "assistant",
+                    &paused_content,
+                    None,
+                    assistant_reasoning,
+                )
+                .await?;
+                window
+                    .emit("chat-end", json!({ "conversationId": conversation_id }))
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+
+            if stream_result.tool_calls.is_empty() {
+                insert_message(
+                    &pool,
+                    &conversation_id,
+                    "assistant",
+                    &assistant_content,
+                    None,
+                    assistant_reasoning.clone(),
+                )
+                .await?;
+                window
+                    .emit("chat-end", json!({ "conversationId": conversation_id }))
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+
+            let assistant_tool_calls_json =
+                serde_json::to_string(&stream_result.tool_calls).map_err(|e| e.to_string())?;
             insert_message(
                 &pool,
                 &conversation_id,
                 "assistant",
                 &assistant_content,
-                None,
-                assistant_reasoning.clone(),
-            )
-            .await?;
-            window.emit("chat-end", &()).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-
-        let assistant_tool_calls_json =
-            serde_json::to_string(&stream_result.tool_calls).map_err(|e| e.to_string())?;
-        insert_message(
-            &pool,
-            &conversation_id,
-            "assistant",
-            &assistant_content,
-            Some(assistant_tool_calls_json.clone()),
-            assistant_reasoning,
-        )
-        .await?;
-
-        context_messages.push(ChatMessage {
-            role: "assistant".to_string(),
-            content: if assistant_content.is_empty() {
-                None
-            } else {
-                Some(assistant_content)
-            },
-            tool_calls: Some(stream_result.tool_calls.clone()),
-            tool_call_id: None,
-        });
-
-        update_repeated_signature_rounds(
-            &mut last_tool_signature,
-            &mut repeated_signature_rounds,
-            build_tool_round_signature(&stream_result.tool_calls),
-        );
-
-        if repeated_signature_rounds >= 2 {
-            let guard_text = REPEATED_TOOL_GUARD_TEXT;
-            window
-                .emit("chat-chunk", guard_text)
-                .map_err(|e| e.to_string())?;
-            insert_message(&pool, &conversation_id, "assistant", guard_text, None, None).await?;
-            window.emit("chat-end", &()).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-
-        for tool_call in stream_result.tool_calls {
-            let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments);
-            let decision = resolve_tool_execution_decision(
-                &config,
-                &window,
-                &conversation_id,
-                &tool_call,
-                &parsed_arguments,
-                &always_allowed_tools,
+                Some(assistant_tool_calls_json.clone()),
+                assistant_reasoning,
             )
             .await?;
 
-            match decision {
-                ToolApprovalDecision::AllowAlways => {
-                    always_allowed_tools.insert(tool_call.function.name.clone());
-                }
-                ToolApprovalDecision::AllowOnce => {}
-                ToolApprovalDecision::Deny => {
-                    let error_text = format!(
-                        "User denied execution of tool '{}'",
-                        tool_call.function.name
-                    );
-                    emit_tool_result_event(&window, &tool_call, None, Some(&error_text))?;
-                    let result_text = format_tool_error_result(&error_text)?;
+            context_messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: if assistant_content.is_empty() {
+                    None
+                } else {
+                    Some(assistant_content)
+                },
+                tool_calls: Some(stream_result.tool_calls.clone()),
+                tool_call_id: None,
+            });
+
+            update_repeated_signature_rounds(
+                &mut last_tool_signature,
+                &mut repeated_signature_rounds,
+                build_tool_round_signature(&stream_result.tool_calls),
+            );
+
+            if repeated_signature_rounds >= 2 {
+                let guard_text = REPEATED_TOOL_GUARD_TEXT;
+                window
+                    .emit(
+                        "chat-chunk",
+                        json!({
+                            "conversationId": conversation_id,
+                            "chunk": guard_text
+                        }),
+                    )
+                    .map_err(|e| e.to_string())?;
+                insert_message(&pool, &conversation_id, "assistant", guard_text, None, None)
+                    .await?;
+                window
+                    .emit("chat-end", json!({ "conversationId": conversation_id }))
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+
+            let mut cancelled_during_tools = false;
+            for tool_call in stream_result.tool_calls {
+                if stop_flag.load(Ordering::Relaxed) {
+                    cancelled_during_tools = true;
+                    emit_tool_result_event(
+                        &window,
+                        &conversation_id,
+                        &tool_call,
+                        None,
+                        Some("Paused by user"),
+                    )?;
+                    let result_text = format_tool_error_result("Paused by user")?;
                     persist_tool_result_message(
                         &pool,
                         &conversation_id,
@@ -2749,51 +2973,139 @@ pub async fn stream_message(
                         result_text,
                     )
                     .await?;
-                    continue;
+                    break;
+                }
+
+                let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments);
+                let decision = resolve_tool_execution_decision(
+                    &config,
+                    &window,
+                    &conversation_id,
+                    &tool_call,
+                    &parsed_arguments,
+                    &always_allowed_tools,
+                )
+                .await?;
+
+                if stop_flag.load(Ordering::Relaxed) {
+                    cancelled_during_tools = true;
+                    emit_tool_result_event(
+                        &window,
+                        &conversation_id,
+                        &tool_call,
+                        None,
+                        Some("Paused by user"),
+                    )?;
+                    let result_text = format_tool_error_result("Paused by user")?;
+                    persist_tool_result_message(
+                        &pool,
+                        &conversation_id,
+                        &mut context_messages,
+                        &tool_call,
+                        result_text,
+                    )
+                    .await?;
+                    break;
+                }
+
+                match decision {
+                    ToolApprovalDecision::AllowAlways => {
+                        always_allowed_tools.insert(tool_call.function.name.clone());
+                    }
+                    ToolApprovalDecision::AllowOnce => {}
+                    ToolApprovalDecision::Deny => {
+                        let error_text = format!(
+                            "User denied execution of tool '{}'",
+                            tool_call.function.name
+                        );
+                        emit_tool_result_event(
+                            &window,
+                            &conversation_id,
+                            &tool_call,
+                            None,
+                            Some(&error_text),
+                        )?;
+                        let result_text = format_tool_error_result(&error_text)?;
+                        persist_tool_result_message(
+                            &pool,
+                            &conversation_id,
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+
+                let tool_result = execute_tool_call(
+                    mcp_state,
+                    skill_state,
+                    &tool_map,
+                    &tool_call,
+                    &workspace_root,
+                    &conversation_id,
+                    &pool,
+                    &llm_service,
+                    &model_to_use,
+                )
+                .await;
+                match tool_result {
+                    Ok(value) => {
+                        let result_text = serde_json::to_string_pretty(&value)
+                            .unwrap_or_else(|_| value.to_string());
+                        emit_tool_result_event(
+                            &window,
+                            &conversation_id,
+                            &tool_call,
+                            Some(&result_text),
+                            None,
+                        )?;
+                        persist_tool_result_message(
+                            &pool,
+                            &conversation_id,
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        )
+                        .await?;
+                    }
+                    Err(error_text) => {
+                        emit_tool_result_event(
+                            &window,
+                            &conversation_id,
+                            &tool_call,
+                            None,
+                            Some(&error_text),
+                        )?;
+                        let result_text = format_tool_error_result(&error_text)?;
+                        persist_tool_result_message(
+                            &pool,
+                            &conversation_id,
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        )
+                        .await?;
+                    }
                 }
             }
 
-            let tool_result = execute_tool_call(
-                mcp_state,
-                skill_state,
-                &tool_map,
-                &tool_call,
-                &workspace_root,
-                &conversation_id,
-                &pool,
-                &llm_service,
-                &model_to_use,
-            )
-            .await;
-            match tool_result {
-                Ok(value) => {
-                    let result_text =
-                        serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-                    emit_tool_result_event(&window, &tool_call, Some(&result_text), None)?;
-                    persist_tool_result_message(
-                        &pool,
-                        &conversation_id,
-                        &mut context_messages,
-                        &tool_call,
-                        result_text,
-                    )
-                    .await?;
-                }
-                Err(error_text) => {
-                    emit_tool_result_event(&window, &tool_call, None, Some(&error_text))?;
-                    let result_text = format_tool_error_result(&error_text)?;
-                    persist_tool_result_message(
-                        &pool,
-                        &conversation_id,
-                        &mut context_messages,
-                        &tool_call,
-                        result_text,
-                    )
-                    .await?;
-                }
+            if cancelled_during_tools {
+                window
+                    .emit("chat-end", json!({ "conversationId": conversation_id }))
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
             }
         }
     }
+    .await;
+
+    clear_stream_stop_flag(&conversation_id).await;
+    if result.is_err() {
+        let _ = window.emit("chat-end", json!({ "conversationId": conversation_id }));
+    }
+    result
 }
 
 #[tauri::command]

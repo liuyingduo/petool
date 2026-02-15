@@ -26,6 +26,7 @@ export const useChatStore = defineStore('chat', () => {
   const currentConversationId = ref<string | null>(null)
   const loading = ref(false)
   const streaming = ref(false)
+  const streamingByConversation = ref<Record<string, boolean>>({})
 
   const currentMessages = computed(() => {
     if (!currentConversationId.value) return []
@@ -76,6 +77,8 @@ export const useChatStore = defineStore('chat', () => {
       await invoke('delete_conversation', { id })
       conversations.value = conversations.value.filter(c => c.id !== id)
       delete messages.value[id]
+      delete streamingByConversation.value[id]
+      streaming.value = Object.values(streamingByConversation.value).some(Boolean)
       if (currentConversationId.value === id) {
         currentConversationId.value = null
       }
@@ -107,6 +110,21 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function setConversationStreaming(conversationId: string, isStreaming: boolean) {
+    if (!conversationId) return
+    if (isStreaming) {
+      streamingByConversation.value[conversationId] = true
+    } else {
+      delete streamingByConversation.value[conversationId]
+    }
+    streaming.value = Object.values(streamingByConversation.value).some(Boolean)
+  }
+
+  function isConversationStreaming(conversationId: string | null | undefined) {
+    if (!conversationId) return false
+    return Boolean(streamingByConversation.value[conversationId])
+  }
+
   return {
     conversations,
     messages,
@@ -115,12 +133,15 @@ export const useChatStore = defineStore('chat', () => {
     currentConversation,
     loading,
     streaming,
+    streamingByConversation,
     loadConversations,
     loadMessages,
     createConversation,
     deleteConversation,
     setCurrentConversation,
     addMessage,
-    updateLastMessage
+    updateLastMessage,
+    setConversationStreaming,
+    isConversationStreaming
   }
 })

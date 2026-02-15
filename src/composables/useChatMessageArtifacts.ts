@@ -11,7 +11,8 @@ import {
 } from '../utils/toolDisplay'
 
 interface ChatStoreLike {
-  streaming: boolean
+  currentConversationId: string | null
+  isConversationStreaming: (conversationId: string | null | undefined) => boolean
   messages: Record<string, Message[]>
 }
 
@@ -61,7 +62,10 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
   }
 
   function isStreamingMessage(messageId: string) {
-    return Boolean(options.chatStore.streaming && options.activeAssistantMessageId.value === messageId)
+    return Boolean(
+      options.chatStore.isConversationStreaming(options.chatStore.currentConversationId) &&
+      options.activeAssistantMessageId.value === messageId
+    )
   }
 
   function isRenderableMessage(message: Message) {

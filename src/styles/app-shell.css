@@ -1238,6 +1238,7 @@ label {
 }
 
 .attach-btn,
+.image-btn,
 .send-btn {
   border: none;
   width: 42px;
@@ -1254,10 +1255,19 @@ label {
   color: #9c958d;
 }
 
+.image-btn {
+  background: rgba(74, 124, 89, 0.14);
+  color: #4a7c59;
+}
+
 .attach-btn .material-icons-round {
   font-size: 24px;
   transform: rotate(-45deg);
   transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.image-btn .material-icons-round {
+  font-size: 20px;
 }
 
 .attach-btn:hover .material-icons-round {
@@ -1278,7 +1288,15 @@ label {
   font-size: 24px;
 }
 
+.send-btn .send-stop-square {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: #fff;
+}
+
 .send-btn:disabled,
+.image-btn:disabled,
 .attach-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;

@@ -101,6 +101,7 @@ pub struct LlmStreamResult {
     pub content: String,
     pub reasoning: String,
     pub tool_calls: Vec<ChatToolCall>,
+    pub cancelled: bool,
 }
 
 #[derive(Default)]
@@ -223,6 +224,7 @@ impl LlmService {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ChatTool>>,
         mut callback: impl FnMut(LlmStreamEvent) + Send + 'a,
+        should_cancel: impl Fn() -> bool + Send + Sync + 'a,
     ) -> Result<LlmStreamResult> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
@@ -255,13 +257,23 @@ impl LlmService {
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
+        let mut cancelled = false;
+        let mut done = false;
 
         while let Some(item) = stream.next().await {
+            if should_cancel() {
+                cancelled = true;
+                break;
+            }
             let chunk = item?;
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
             while let Some(pos) = buffer.find('\n') {
+                if should_cancel() {
+                    cancelled = true;
+                    break;
+                }
                 let line = buffer[..pos].trim_end_matches('\r').to_string();
                 buffer = buffer[pos + 1..].to_string();
 
@@ -271,6 +283,7 @@ impl LlmService {
 
                 let data = &line[6..];
                 if data == "[DONE]" {
+                    done = true;
                     break;
                 }
 
@@ -338,6 +351,10 @@ impl LlmService {
                     }
                 }
             }
+
+            if cancelled || done {
+                break;
+            }
         }
 
         let tool_calls = tool_call_builders
@@ -363,6 +380,7 @@ impl LlmService {
             content,
             reasoning,
             tool_calls,
+            cancelled,
         })
     }
 
@@ -423,5 +441,46 @@ impl LlmService {
             .unwrap_or_default();
 
         Ok(content)
+    }
+
+    pub async fn generate_image(
+        &self,
+        model: &str,
+        prompt: &str,
+        size: &str,
+        watermark: bool,
+    ) -> Result<String> {
+        let url = format!("{}/images/generations", self.api_base.trim_end_matches('/'));
+        let request = json!({
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": "url",
+            "extra_body": {
+                "watermark": watermark
+            }
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error = response.text().await?;
+            return Err(anyhow!("Image API error: {}", error));
+        }
+
+        let response_json: Value = response.json().await?;
+        let image_url = response_json
+            .pointer("/data/0/url")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("Image API returned empty URL"))?;
+
+        Ok(image_url.to_string())
     }
 }

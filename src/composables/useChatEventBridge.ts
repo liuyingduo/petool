@@ -27,6 +27,7 @@ interface ChatStoreBridge {
   currentConversationId: string | null
   streaming: boolean
   updateLastMessage: (conversationId: string, chunk: string) => void
+  setConversationStreaming: (conversationId: string, isStreaming: boolean) => void
 }
 
 interface ChatEventBridgeOptions {
@@ -35,7 +36,7 @@ interface ChatEventBridgeOptions {
   reasoningByMessage: Ref<Record<string, ReasoningEntry>>
   toolStreamItems: Ref<ToolStreamItem[]>
   onToolApprovalRequest?: (request: ToolApprovalRequest) => void
-  onStreamEnd: () => void
+  onStreamEnd: (conversationId: string | null) => void
 }
 
 export async function registerChatEventListeners(options: ChatEventBridgeOptions) {
@@ -121,23 +122,54 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
 
   unlistenFns.push(
     await listen('chat-chunk', (event) => {
-      const chunk = event.payload as string
-      if (!options.chatStore.currentConversationId) return
-      options.chatStore.updateLastMessage(options.chatStore.currentConversationId, chunk)
+      let chunk = ''
+      let conversationId: string | null = options.chatStore.currentConversationId
+      if (typeof event.payload === 'string') {
+        chunk = event.payload
+      } else if (event.payload && typeof event.payload === 'object') {
+        const payload = event.payload as { conversationId?: string; chunk?: string }
+        chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
+        conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
+      }
+
+      if (!conversationId || !chunk) return
+      options.chatStore.updateLastMessage(conversationId, chunk)
     })
   )
 
   unlistenFns.push(
-    await listen('chat-end', () => {
-      options.chatStore.streaming = false
-      options.onStreamEnd()
-      options.activeAssistantMessageId.value = null
+    await listen('chat-end', (event) => {
+      let conversationId: string | null = options.chatStore.currentConversationId
+      if (event.payload && typeof event.payload === 'object') {
+        const payload = event.payload as { conversationId?: string }
+        if (typeof payload.conversationId === 'string') {
+          conversationId = payload.conversationId
+        }
+      }
+
+      if (conversationId) {
+        options.chatStore.setConversationStreaming(conversationId, false)
+      }
+      options.onStreamEnd(conversationId)
+      if (conversationId && conversationId === options.chatStore.currentConversationId) {
+        options.activeAssistantMessageId.value = null
+      }
     })
   )
 
   unlistenFns.push(
     await listen('chat-reasoning', (event) => {
-      const chunk = event.payload as string
+      let chunk = ''
+      let conversationId: string | null = options.chatStore.currentConversationId
+      if (typeof event.payload === 'string') {
+        chunk = event.payload
+      } else if (event.payload && typeof event.payload === 'object') {
+        const payload = event.payload as { conversationId?: string; chunk?: string }
+        chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
+        conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
+      }
+
+      if (conversationId !== options.chatStore.currentConversationId) return
       if (!chunk || !options.activeAssistantMessageId.value) return
 
       const id = options.activeAssistantMessageId.value
@@ -154,7 +186,19 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
 
   unlistenFns.push(
     await listen('chat-tool-call', (event) => {
-      const payload = event.payload as { index?: number; toolCallId?: string; name?: string; argumentsChunk?: string }
+      const payload = event.payload as {
+        conversationId?: string
+        index?: number
+        toolCallId?: string
+        name?: string
+        argumentsChunk?: string
+      }
+      if (
+        payload.conversationId &&
+        payload.conversationId !== options.chatStore.currentConversationId
+      ) {
+        return
+      }
       const id = payload.toolCallId || provisionalToolId(payload.index)
       let item = payload.toolCallId
         ? findToolItem(payload.toolCallId, payload.index, payload.name)
@@ -191,7 +235,19 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
 
   unlistenFns.push(
     await listen('chat-tool-result', (event) => {
-      const payload = event.payload as { toolCallId?: string; name?: string; result?: string | null; error?: string | null }
+      const payload = event.payload as {
+        conversationId?: string
+        toolCallId?: string
+        name?: string
+        result?: string | null
+        error?: string | null
+      }
+      if (
+        payload.conversationId &&
+        payload.conversationId !== options.chatStore.currentConversationId
+      ) {
+        return
+      }
       const id = payload.toolCallId || provisionalToolId(undefined)
       let item = findToolItem(payload.toolCallId, undefined, payload.name, true)
 

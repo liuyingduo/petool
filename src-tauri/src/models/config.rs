@@ -21,6 +21,26 @@ fn default_clawhub_api_base_option() -> Option<String> {
     Some(default_clawhub_api_base())
 }
 
+fn default_ark_api_base() -> String {
+    "https://ark.cn-beijing.volces.com/api/v3".to_string()
+}
+
+fn default_ark_api_base_option() -> Option<String> {
+    Some(default_ark_api_base())
+}
+
+fn default_image_model() -> String {
+    "doubao-seedream-4-5-251128".to_string()
+}
+
+fn default_image_size() -> String {
+    "2K".to_string()
+}
+
+fn default_image_watermark() -> bool {
+    true
+}
+
 fn default_browser_operation_timeout_ms() -> u64 {
     20_000
 }
@@ -45,6 +65,16 @@ pub struct Config {
     pub clawhub_api_key: Option<String>,
     #[serde(default = "default_clawhub_api_base_option")]
     pub clawhub_api_base: Option<String>,
+    #[serde(default)]
+    pub ark_api_key: Option<String>,
+    #[serde(default = "default_ark_api_base_option")]
+    pub ark_api_base: Option<String>,
+    #[serde(default = "default_image_model")]
+    pub image_model: String,
+    #[serde(default = "default_image_size")]
+    pub image_size: String,
+    #[serde(default = "default_image_watermark")]
+    pub image_watermark: bool,
     pub model: String,
     pub system_prompt: Option<String>,
     pub work_directory: Option<String>,
@@ -202,6 +232,11 @@ impl Default for Config {
             api_base: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
             clawhub_api_key: None,
             clawhub_api_base: Some(default_clawhub_api_base()),
+            ark_api_key: None,
+            ark_api_base: Some(default_ark_api_base()),
+            image_model: default_image_model(),
+            image_size: default_image_size(),
+            image_watermark: default_image_watermark(),
             model: "glm-5".to_string(),
             system_prompt: None,
             work_directory: None,
