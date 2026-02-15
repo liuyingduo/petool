@@ -29,6 +29,9 @@ globset = "0.4"
 walkdir = "2"
 base64 = "0.22"
 serde_yaml = "0.9"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"

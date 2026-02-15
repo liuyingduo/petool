@@ -402,16 +402,16 @@ async fn build_skills_usage_guidance(skill_manager_state: &SkillManagerState) ->
     lines.join("\n")
 }
 
-fn resolve_skillsmp_settings_for_discovery() -> (Option<String>, Option<String>) {
+fn resolve_clawhub_settings_for_discovery() -> (Option<String>, Option<String>) {
     if let Ok(config) = crate::utils::load_config::<Config>() {
         let key = config
-            .skillsmp_api_key
+            .clawhub_api_key
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let base = config
-            .skillsmp_api_base
+            .clawhub_api_base
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -427,7 +427,7 @@ fn resolve_skillsmp_settings_for_discovery() -> (Option<String>, Option<String>)
     let Ok(raw) = std::fs::read_to_string(path) else {
         return (None, None);
     };
-    let key = Regex::new(r#""skillsmp_api_key"\s*:\s*"([^"]*)""#)
+    let key = Regex::new(r#""clawhub_api_key"\s*:\s*"([^"]*)""#)
         .ok()
         .and_then(|regex| regex.captures(&raw))
         .and_then(|caps| {
@@ -435,7 +435,7 @@ fn resolve_skillsmp_settings_for_discovery() -> (Option<String>, Option<String>)
                 .map(|capture| capture.as_str().trim().to_string())
         })
         .filter(|value| !value.is_empty());
-    let base = Regex::new(r#""skillsmp_api_base"\s*:\s*"([^"]*)""#)
+    let base = Regex::new(r#""clawhub_api_base"\s*:\s*"([^"]*)""#)
         .ok()
         .and_then(|regex| regex.captures(&raw))
         .and_then(|caps| {
@@ -1999,14 +1999,14 @@ async fn execute_skill_discover(
 ) -> Result<Value, String> {
     let query = read_optional_string_argument(arguments, "query");
     let limit = read_u64_argument(arguments, "limit", 8).clamp(1, 20) as usize;
-    let (skillsmp_api_key, skillsmp_api_base) = resolve_skillsmp_settings_for_discovery();
+    let (clawhub_api_key, clawhub_api_base) = resolve_clawhub_settings_for_discovery();
     let manager = skill_manager_state.lock().await;
     let results = manager
         .discover_skills(
             query.as_deref(),
             limit,
-            skillsmp_api_key.as_deref(),
-            skillsmp_api_base.as_deref(),
+            clawhub_api_key.as_deref(),
+            clawhub_api_base.as_deref(),
         )
         .await
         .map_err(|e| e.to_string())?;

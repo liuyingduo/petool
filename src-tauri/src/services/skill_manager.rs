@@ -1,9 +1,11 @@
 use crate::models::skill::*;
+use crate::services::node_runtime;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
@@ -16,45 +18,10 @@ pub struct SkillManager {
     skills_dir: PathBuf,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct GithubCodeSearchResponse {
-    #[serde(default)]
-    items: Vec<GithubCodeSearchItem>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct GithubCodeSearchItem {
-    path: String,
-    repository: GithubRepository,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct GithubRepository {
-    name: String,
-    full_name: String,
-    html_url: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    stargazers_count: Option<u64>,
-    #[serde(default)]
-    updated_at: Option<String>,
-    #[serde(default)]
-    default_branch: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct RemoteSkillManifest {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy)]
-enum GithubManifestKind {
-    SkillMarkdown,
-    SkillJson,
+enum ArchiveKind {
+    Zip,
+    TarGz,
 }
 
 #[derive(Debug, Clone)]
@@ -70,20 +37,6 @@ struct SkillMarkdownManifest {
 struct LoadedSkill {
     skill: Skill,
     entry_point: Option<String>,
-}
-
-fn parse_github_full_name_from_repo_url(repo_url: &str) -> Option<String> {
-    let normalized = repo_url.trim().trim_end_matches(".git");
-    let marker = "github.com/";
-    let index = normalized.find(marker)?;
-    let tail = &normalized[index + marker.len()..];
-    let mut parts = tail.split('/');
-    let owner = parts.next()?.trim();
-    let repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    Some(format!("{}/{}", owner, repo))
 }
 
 fn read_string_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -123,12 +76,6 @@ fn read_string_or_number_at_path(value: &Value, path: &[&str]) -> Option<String>
         return Some(num.to_string());
     }
     None
-}
-
-fn normalize_optional_skill_path(value: Option<String>) -> Option<String> {
-    value
-        .map(|text| text.trim().trim_matches('/').trim_matches('\\').to_string())
-        .filter(|text| !text.is_empty() && text != ".")
 }
 
 fn sanitize_skill_dir_name(value: &str) -> String {
@@ -235,6 +182,314 @@ fn parse_skill_markdown_manifest(content: &str) -> Option<SkillMarkdownManifest>
         version,
         body,
     })
+}
+
+fn summarize_error_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown error".to_string();
+    }
+    let single_line = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if single_line.len() > 240 {
+        format!("{}...", &single_line[..237])
+    } else {
+        single_line
+    }
+}
+
+fn detect_archive_kind_from_url(url: &str) -> Option<ArchiveKind> {
+    let path = reqwest::Url::parse(url)
+        .ok()
+        .map(|parsed| parsed.path().to_string())
+        .unwrap_or_else(|| {
+            url.split('?')
+                .next()
+                .map(str::to_string)
+                .unwrap_or_default()
+        });
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".zip") {
+        return Some(ArchiveKind::Zip);
+    }
+    if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        return Some(ArchiveKind::TarGz);
+    }
+    None
+}
+
+fn detect_archive_kind_from_content_type(content_type: &str) -> Option<ArchiveKind> {
+    let normalized = content_type.trim().to_ascii_lowercase();
+    if normalized.contains("application/zip") || normalized.contains("application/x-zip") {
+        return Some(ArchiveKind::Zip);
+    }
+    if normalized.contains("application/gzip")
+        || normalized.contains("application/x-gzip")
+        || normalized.contains("application/x-tar")
+    {
+        return Some(ArchiveKind::TarGz);
+    }
+    None
+}
+
+fn normalize_clawhub_base(input: Option<&str>) -> String {
+    let raw = input
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://clawhub.ai");
+    let trimmed = raw.trim_end_matches('/');
+
+    if let Ok(parsed) = reqwest::Url::parse(trimmed) {
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+        let mut base = format!("{}://{}", parsed.scheme(), host);
+        if let Some(port) = parsed.port() {
+            base.push(':');
+            base.push_str(&port.to_string());
+        }
+        if let Some(path_base) = parsed.path().strip_suffix("/api/v1") {
+            let path = path_base.trim_end_matches('/');
+            if !path.is_empty() && path != "/" {
+                base.push_str(path);
+            }
+            return base;
+        }
+        let path = parsed.path().trim_end_matches('/');
+        if !path.is_empty() && path != "/" {
+            base.push_str(path);
+        }
+        return base;
+    }
+
+    if let Some(base) = trimmed.strip_suffix("/api/v1") {
+        return base.trim_end_matches('/').to_string();
+    }
+    trimmed.to_string()
+}
+
+fn build_clawhub_api_url(base: &str, path: &str, query: &[(&str, &str)]) -> Result<String> {
+    let origin = normalize_clawhub_base(Some(base));
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/api/v1/{}",
+        origin,
+        path.trim_start_matches('/')
+    ))
+    .map_err(|error| anyhow!("Invalid ClawHub base URL '{}': {}", base, error))?;
+    for (key, value) in query {
+        url.query_pairs_mut().append_pair(key, value);
+    }
+    Ok(url.to_string())
+}
+
+fn parse_clawhub_slug_from_url(raw: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(raw).ok()?;
+    let segments: Vec<String> = parsed
+        .path_segments()
+        .map(|iter| {
+            iter.filter(|segment| !segment.trim().is_empty())
+                .map(|segment| segment.trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if segments.is_empty() {
+        return None;
+    }
+
+    if let Some(slug) = parsed.query_pairs().find_map(|(key, value)| {
+        if key == "slug" {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        } else {
+            None
+        }
+    }) {
+        return Some(slug);
+    }
+
+    if segments.first().map(|value| value.as_str()) == Some("skills") && segments.len() >= 2 {
+        return segments.get(1).cloned();
+    }
+    if segments.len() == 1 && segments.first().map(|value| value.as_str()) == Some("skills") {
+        return None;
+    }
+    if segments.first().map(|value| value.as_str()) == Some("api")
+        && segments.get(1).map(|value| value.as_str()) == Some("v1")
+        && segments.get(2).map(|value| value.as_str()) == Some("skills")
+        && segments.len() >= 4
+    {
+        return segments.get(3).cloned();
+    }
+    if segments.len() >= 2 {
+        return segments.get(1).cloned();
+    }
+    segments.first().cloned()
+}
+
+fn resolve_clawhub_install_source_url(input: &str, api_base: Option<&str>) -> Result<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Skill source is empty"));
+    }
+
+    if let Ok(parsed_url) = reqwest::Url::parse(trimmed) {
+        let host = parsed_url
+            .host_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if parsed_url.path().contains("/api/v1/download") {
+            return Ok(parsed_url.to_string());
+        }
+        if host.contains("clawhub.ai") || host.contains("clawhub.com") {
+            if let Some(slug) = parse_clawhub_slug_from_url(trimmed) {
+                let mut query_pairs: Vec<(&str, String)> = vec![("slug", slug)];
+                if let Some(version) = parsed_url.query_pairs().find_map(|(key, value)| {
+                    if key == "version" {
+                        let text = value.trim();
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.to_string())
+                        }
+                    } else {
+                        None
+                    }
+                }) {
+                    query_pairs.push(("version", version));
+                }
+                let owned_query: Vec<(&str, &str)> = query_pairs
+                    .iter()
+                    .map(|(key, value)| (*key, value.as_str()))
+                    .collect();
+                return build_clawhub_api_url(
+                    parsed_url.origin().ascii_serialization().as_str(),
+                    "/download",
+                    &owned_query,
+                );
+            }
+            return Err(anyhow!(
+                "ClawHub URL does not point to a skill. Please provide a skill slug or download URL."
+            ));
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    let slug = trimmed.trim_matches('/').to_string();
+    if slug.is_empty() {
+        return Err(anyhow!("Skill slug is empty"));
+    }
+    build_clawhub_api_url(
+        &normalize_clawhub_base(api_base),
+        "/download",
+        &[("slug", &slug)],
+    )
+}
+
+fn extract_zip_archive(archive_path: &Path, destination: &Path) -> Result<()> {
+    let file = fs::File::open(archive_path)?;
+    let mut zip = zip::ZipArchive::new(file)?;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index)?;
+        let Some(safe_path) = entry.enclosed_name().map(|value| value.to_owned()) else {
+            continue;
+        };
+        let output_path = destination.join(safe_path);
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path)?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out_file = fs::File::create(&output_path)?;
+        io::copy(&mut entry, &mut out_file)?;
+    }
+    Ok(())
+}
+
+fn extract_tar_gz_archive(archive_path: &Path, destination: &Path) -> Result<()> {
+    let file = fs::File::open(archive_path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(destination)?;
+    Ok(())
+}
+
+fn resolve_extracted_source_root(extracted_dir: &Path) -> Result<PathBuf> {
+    let mut child_dirs: Vec<PathBuf> = Vec::new();
+    let mut file_count = 0usize;
+    for entry in fs::read_dir(extracted_dir)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            child_dirs.push(entry_path);
+        } else {
+            file_count += 1;
+        }
+    }
+    if file_count == 0 && child_dirs.len() == 1 {
+        return Ok(child_dirs.remove(0));
+    }
+    Ok(extracted_dir.to_path_buf())
+}
+
+async fn download_archive_to_file(
+    client: &reqwest::Client,
+    url: &str,
+    archive_file: &Path,
+) -> Result<Option<String>> {
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "download failed (status {}): {}",
+            response.status(),
+            url
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let bytes = response.bytes().await?;
+    fs::write(archive_file, bytes)?;
+    Ok(content_type)
+}
+
+async fn try_extract_source_from_archive(source_url: &str, temp_dir: &Path) -> Result<PathBuf> {
+    let client = reqwest::Client::builder()
+        .user_agent("petool/0.1")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let extracted_dir = temp_dir.join("source");
+    fs::create_dir_all(&extracted_dir)?;
+
+    let archive_file = temp_dir.join("skill-archive");
+    let content_type = download_archive_to_file(&client, source_url, &archive_file).await?;
+    let archive_kind = detect_archive_kind_from_url(source_url)
+        .or_else(|| {
+            content_type
+                .as_deref()
+                .and_then(detect_archive_kind_from_content_type)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "unsupported skill package type (expected zip/tar.gz), url: {}",
+                source_url
+            )
+        })?;
+    match archive_kind {
+        ArchiveKind::Zip => extract_zip_archive(&archive_file, &extracted_dir)?,
+        ArchiveKind::TarGz => extract_tar_gz_archive(&archive_file, &extracted_dir)?,
+    }
+    resolve_extracted_source_root(&extracted_dir)
 }
 
 fn copy_directory_without_git(source: &Path, destination: &Path) -> Result<()> {
@@ -394,39 +649,39 @@ impl SkillManager {
         repo_url: &str,
         skill_path: Option<&str>,
     ) -> Result<Skill> {
+        let source_url = resolve_clawhub_install_source_url(repo_url, None)?;
         let temp_dir =
             std::env::temp_dir().join(format!("petool-skill-install-{}", Uuid::new_v4()));
-        let temp_dir_str = temp_dir
-            .to_str()
-            .ok_or_else(|| anyhow!("Invalid temp directory path"))?;
-
-        let status = Command::new("git")
-            .args(["clone", "--depth", "1", repo_url, temp_dir_str])
-            .status()?;
-        if !status.success() {
-            let _ = fs::remove_dir_all(&temp_dir);
-            return Err(anyhow!("Failed to clone repository"));
-        }
+        let repo_root = match try_extract_source_from_archive(&source_url, &temp_dir).await {
+            Ok(path) => path,
+            Err(download_error) => {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(anyhow!(
+                    "Failed to install skill package: {}",
+                    summarize_error_text(&download_error.to_string())
+                ));
+            }
+        };
 
         let selected_dir = if let Some(raw_path) = skill_path {
             let trimmed = raw_path.trim().trim_matches('/').trim_matches('\\');
             if trimmed.is_empty() || trimmed == "." {
-                temp_dir.clone()
+                repo_root.clone()
             } else {
-                temp_dir.join(trimmed)
+                repo_root.join(trimmed)
             }
         } else {
-            temp_dir.clone()
+            repo_root.clone()
         };
 
         if !selected_dir.exists() || !selected_dir.is_dir() {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(anyhow!(
-                "Skill path '{}' does not exist in repository",
+                "Skill path '{}' does not exist in downloaded package",
                 skill_path.unwrap_or(".")
             ));
         }
-        let canonical_temp = temp_dir.canonicalize()?;
+        let canonical_temp = repo_root.canonicalize()?;
         let canonical_selected = selected_dir.canonicalize()?;
         if !canonical_selected.starts_with(&canonical_temp) {
             let _ = fs::remove_dir_all(&temp_dir);
@@ -488,14 +743,11 @@ impl SkillManager {
         &self,
         query: Option<&str>,
         limit: usize,
-        skillsmp_api_key: Option<&str>,
-        skillsmp_api_base: Option<&str>,
+        clawhub_api_key: Option<&str>,
+        clawhub_api_base: Option<&str>,
     ) -> Result<Vec<SkillDiscoveryItem>> {
         let search_limit = limit.clamp(1, 20);
-        let query_text = query
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("automation workflow");
+        let query_text = query.map(str::trim).filter(|value| !value.is_empty());
         let installed_names: HashSet<String> = self
             .skills
             .values()
@@ -506,392 +758,151 @@ impl SkillManager {
             .timeout(std::time::Duration::from_secs(12))
             .build()?;
 
-        if let Some(api_key) = skillsmp_api_key
+        let api_key = clawhub_api_key
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            let api_base = skillsmp_api_base
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("https://skillsmp.com/api/v1");
-            if let Ok(results) = self
-                .discover_skills_from_skillsmp(
-                    &client,
-                    query_text,
-                    search_limit,
-                    api_key,
-                    api_base,
-                    &installed_names,
-                )
-                .await
-            {
-                if !results.is_empty() {
-                    return Ok(results);
-                }
-            }
-        }
+            .filter(|value| !value.is_empty());
+        let api_base = normalize_clawhub_base(clawhub_api_base);
 
-        self.discover_skills_from_github(&client, query_text, search_limit, &installed_names)
-            .await
+        self.discover_skills_from_clawhub(
+            &client,
+            query_text,
+            search_limit,
+            api_key,
+            &api_base,
+            &installed_names,
+        )
+        .await
     }
 
-    async fn discover_skills_from_skillsmp(
+    async fn discover_skills_from_clawhub(
         &self,
         client: &reqwest::Client,
-        query_text: &str,
+        query_text: Option<&str>,
         limit: usize,
-        api_key: &str,
+        api_key: Option<&str>,
         api_base: &str,
         installed_names: &HashSet<String>,
     ) -> Result<Vec<SkillDiscoveryItem>> {
-        let base = api_base.trim_end_matches('/');
-        let endpoints = [
-            format!("{}/skills/search", base),
-            format!("{}/skills", base),
-        ];
-        let mut last_error = String::new();
-
-        for endpoint in endpoints {
-            let response = client
-                .get(&endpoint)
-                .query(&[
-                    ("q", query_text),
-                    ("query", query_text),
+        let endpoint = if query_text.is_some() {
+            build_clawhub_api_url(
+                api_base,
+                "/search",
+                &[
+                    ("q", query_text.unwrap_or_default()),
                     ("limit", &limit.to_string()),
-                ])
-                .bearer_auth(api_key)
-                .send()
-                .await;
-            let response = match response {
-                Ok(value) => value,
-                Err(error) => {
-                    last_error = error.to_string();
-                    continue;
-                }
-            };
-            if !response.status().is_success() {
-                last_error = format!("status {}", response.status());
-                continue;
-            }
+                ],
+            )?
+        } else {
+            build_clawhub_api_url(
+                api_base,
+                "/skills",
+                &[("limit", &limit.to_string()), ("sort", "downloads")],
+            )?
+        };
 
-            let payload = response.json::<Value>().await?;
-            let candidate_items = payload
-                .as_array()
+        let mut request = client.get(&endpoint);
+        if let Some(token) = api_key {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "ClawHub discovery failed (status {}): {}",
+                response.status(),
+                endpoint
+            ));
+        }
+
+        let payload = response.json::<Value>().await?;
+        let candidate_items = if query_text.is_some() {
+            payload
+                .get("results")
+                .and_then(Value::as_array)
                 .cloned()
-                .or_else(|| payload.get("items").and_then(Value::as_array).cloned())
-                .or_else(|| payload.get("results").and_then(Value::as_array).cloned())
-                .or_else(|| payload.get("skills").and_then(Value::as_array).cloned())
-                .or_else(|| payload.get("data").and_then(Value::as_array).cloned())
-                .or_else(|| {
-                    payload
-                        .get("data")
-                        .and_then(|data| data.get("skills"))
-                        .and_then(Value::as_array)
-                        .cloned()
-                })
-                .or_else(|| {
-                    payload
-                        .get("data")
-                        .and_then(|data| data.get("items"))
-                        .and_then(Value::as_array)
-                        .cloned()
-                })
-                .unwrap_or_default();
+                .unwrap_or_default()
+        } else {
+            payload
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
 
-            if candidate_items.is_empty() {
+        let mut seen = HashSet::<String>::new();
+        let mut results = Vec::<SkillDiscoveryItem>::new();
+        for item in candidate_items {
+            let slug = read_string_at_path(&item, &["slug"])
+                .or_else(|| read_string_at_path(&item, &["name"]))
+                .or_else(|| read_string_at_path(&item, &["id"]))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if slug.is_empty() {
                 continue;
             }
+            let name = read_string_at_path(&item, &["displayName"])
+                .or_else(|| read_string_at_path(&item, &["display_name"]))
+                .or_else(|| read_string_at_path(&item, &["name"]))
+                .unwrap_or(slug.as_str())
+                .to_string();
+            let description = read_string_at_path(&item, &["summary"])
+                .or_else(|| read_string_at_path(&item, &["description"]))
+                .unwrap_or("")
+                .to_string();
 
-            let mut seen = HashSet::<String>::new();
-            let mut results = Vec::<SkillDiscoveryItem>::new();
-            for item in candidate_items {
-                let name = read_string_at_path(&item, &["name"])
-                    .or_else(|| read_string_at_path(&item, &["title"]))
-                    .or_else(|| read_string_at_path(&item, &["skill_name"]))
-                    .or_else(|| read_string_at_path(&item, &["slug"]))
-                    .unwrap_or("unknown-skill")
-                    .to_string();
-                let description = read_string_at_path(&item, &["description"])
-                    .or_else(|| read_string_at_path(&item, &["summary"]))
-                    .or_else(|| read_string_at_path(&item, &["short_description"]))
-                    .unwrap_or("")
-                    .to_string();
-                let repo_url = read_string_at_path(&item, &["repo_url"])
-                    .or_else(|| read_string_at_path(&item, &["repository_url"]))
-                    .or_else(|| read_string_at_path(&item, &["github_url"]))
-                    .or_else(|| read_string_at_path(&item, &["githubUrl"]))
-                    .or_else(|| read_string_at_path(&item, &["git_url"]))
-                    .or_else(|| read_string_at_path(&item, &["gitUrl"]))
-                    .or_else(|| read_string_at_path(&item, &["repository", "clone_url"]))
-                    .or_else(|| read_string_at_path(&item, &["repository", "cloneUrl"]))
-                    .unwrap_or("")
-                    .to_string();
-                if repo_url.trim().is_empty() {
-                    continue;
-                }
-                let skill_path = normalize_optional_skill_path(
-                    read_string_at_path(&item, &["skill_path"])
-                        .or_else(|| read_string_at_path(&item, &["skillPath"]))
-                        .or_else(|| read_string_at_path(&item, &["path"]))
-                        .or_else(|| read_string_at_path(&item, &["subpath"]))
-                        .map(str::to_string),
-                );
-                let repo_full_name = read_string_at_path(&item, &["repo_full_name"])
-                    .or_else(|| read_string_at_path(&item, &["repository", "full_name"]))
-                    .map(str::to_string)
-                    .or_else(|| parse_github_full_name_from_repo_url(&repo_url))
-                    .unwrap_or_else(|| repo_url.trim().to_string());
-                let repo_html_url = read_string_at_path(&item, &["repo_html_url"])
-                    .or_else(|| read_string_at_path(&item, &["html_url"]))
-                    .or_else(|| read_string_at_path(&item, &["url"]))
-                    .or_else(|| read_string_at_path(&item, &["githubUrl"]))
-                    .or_else(|| read_string_at_path(&item, &["skillUrl"]))
-                    .or_else(|| read_string_at_path(&item, &["repository", "html_url"]))
-                    .or_else(|| read_string_at_path(&item, &["repository", "htmlUrl"]))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| repo_url.trim_end_matches(".git").to_string());
-                let id = read_string_or_number_at_path(&item, &["id"])
-                    .or_else(|| read_string_at_path(&item, &["slug"]).map(str::to_string))
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{}:{}",
-                            repo_full_name,
-                            skill_path.clone().unwrap_or_else(|| ".".to_string())
-                        )
-                    });
-                if !seen.insert(id.clone()) {
-                    continue;
-                }
-                let updated_at = read_string_at_path(&item, &["updated_at"])
-                    .map(str::to_string)
-                    .or_else(|| read_string_or_number_at_path(&item, &["updatedAt"]))
-                    .or_else(|| {
-                        read_string_at_path(&item, &["repository", "updated_at"])
-                            .map(str::to_string)
-                    })
-                    .or_else(|| read_string_or_number_at_path(&item, &["repository", "updatedAt"]));
-
-                results.push(SkillDiscoveryItem {
-                    id,
-                    name: name.clone(),
-                    description,
-                    repo_url,
-                    repo_full_name,
-                    repo_html_url,
-                    source: "skillsmp_api".to_string(),
-                    skill_path,
-                    stars: read_u64_at_path(&item, &["stars"])
-                        .or_else(|| read_u64_at_path(&item, &["stargazers_count"]))
-                        .or_else(|| read_u64_at_path(&item, &["repository", "stargazers_count"]))
-                        .unwrap_or(0),
-                    updated_at,
-                    installed: installed_names.contains(&name.to_lowercase()),
-                });
+            let version = read_string_at_path(&item, &["version"])
+                .or_else(|| read_string_at_path(&item, &["latestVersion", "version"]))
+                .or_else(|| read_string_at_path(&item, &["latest_version", "version"]))
+                .map(str::to_string);
+            let mut query_pairs: Vec<(&str, String)> = vec![("slug", slug.clone())];
+            if let Some(version) = version.as_ref().filter(|value| !value.trim().is_empty()) {
+                query_pairs.push(("version", version.clone()));
             }
+            let owned_query: Vec<(&str, &str)> = query_pairs
+                .iter()
+                .map(|(key, value)| (*key, value.as_str()))
+                .collect();
+            let install_source_url = build_clawhub_api_url(api_base, "/download", &owned_query)?;
+            let html_url = format!(
+                "{}/skills?q={}",
+                normalize_clawhub_base(Some(api_base)),
+                slug
+            );
+            let id = slug.clone();
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let updated_at = read_string_or_number_at_path(&item, &["updatedAt"])
+                .or_else(|| read_string_or_number_at_path(&item, &["updated_at"]))
+                .or_else(|| read_string_or_number_at_path(&item, &["latestVersion", "createdAt"]));
+            let stars = read_u64_at_path(&item, &["stats", "stars"])
+                .or_else(|| read_u64_at_path(&item, &["stars"]))
+                .unwrap_or(0);
 
-            results.sort_by(|left, right| {
-                right
-                    .stars
-                    .cmp(&left.stars)
-                    .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            results.push(SkillDiscoveryItem {
+                id,
+                name: name.clone(),
+                description,
+                repo_url: install_source_url,
+                repo_full_name: slug.clone(),
+                repo_html_url: html_url,
+                source: "clawhub_api".to_string(),
+                skill_path: None,
+                stars,
+                updated_at,
+                installed: installed_names.contains(&name.to_lowercase()),
             });
-            if results.len() > limit {
-                results.truncate(limit);
-            }
-            return Ok(results);
         }
 
-        if last_error.is_empty() {
-            return Err(anyhow!("SkillsMP discovery failed"));
-        }
-        Err(anyhow!("SkillsMP discovery failed: {}", last_error))
-    }
-
-    async fn discover_skills_from_github(
-        &self,
-        client: &reqwest::Client,
-        query_text: &str,
-        limit: usize,
-        installed_names: &HashSet<String>,
-    ) -> Result<Vec<SkillDiscoveryItem>> {
-        let mut combined: Vec<SkillDiscoveryItem> = Vec::new();
-        let mut seen = HashSet::<String>::new();
-        let mut errors: Vec<String> = Vec::new();
-
-        for kind in [
-            GithubManifestKind::SkillMarkdown,
-            GithubManifestKind::SkillJson,
-        ] {
-            match self
-                .discover_skills_from_github_manifest(
-                    client,
-                    query_text,
-                    limit,
-                    installed_names,
-                    kind,
-                )
-                .await
-            {
-                Ok(items) => {
-                    for item in items {
-                        if seen.insert(item.id.clone()) {
-                            combined.push(item);
-                        }
-                    }
-                }
-                Err(error) => errors.push(error.to_string()),
-            }
-        }
-
-        combined.sort_by(|left, right| {
+        results.sort_by(|left, right| {
             right
                 .stars
                 .cmp(&left.stars)
                 .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
         });
-        if combined.len() > limit {
-            combined.truncate(limit);
+        if results.len() > limit {
+            results.truncate(limit);
         }
-        if !combined.is_empty() {
-            return Ok(combined);
-        }
-        if errors.is_empty() {
-            return Ok(Vec::new());
-        }
-        Err(anyhow!(
-            "Failed to discover skills from GitHub: {}",
-            errors.join(" | ")
-        ))
-    }
-
-    async fn discover_skills_from_github_manifest(
-        &self,
-        client: &reqwest::Client,
-        query_text: &str,
-        limit: usize,
-        installed_names: &HashSet<String>,
-        kind: GithubManifestKind,
-    ) -> Result<Vec<SkillDiscoveryItem>> {
-        let manifest_name = match kind {
-            GithubManifestKind::SkillMarkdown => "SKILL.md",
-            GithubManifestKind::SkillJson => "skill.json",
-        };
-        let source = match kind {
-            GithubManifestKind::SkillMarkdown => "github_code_search_skillmd",
-            GithubManifestKind::SkillJson => "github_code_search_skilljson",
-        };
-        let search_query = format!("filename:{} {}", manifest_name, query_text);
-        let response = client
-            .get("https://api.github.com/search/code")
-            .query(&[
-                ("q", search_query.as_str()),
-                ("per_page", &limit.to_string()),
-            ])
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Failed to discover {} from GitHub (status {}): {}",
-                manifest_name,
-                status,
-                body.chars().take(240).collect::<String>()
-            ));
-        }
-
-        let payload = response.json::<GithubCodeSearchResponse>().await?;
-        let mut seen = HashSet::<String>::new();
-        let mut results = Vec::<SkillDiscoveryItem>::new();
-
-        for item in payload.items {
-            let skill_dir = Path::new(&item.path)
-                .parent()
-                .map(|value| value.to_string_lossy().to_string())
-                .unwrap_or_else(|| ".".to_string());
-            let skill_path = normalize_optional_skill_path(Some(skill_dir));
-            let repo_full_name = item.repository.full_name.clone();
-            let result_id = format!(
-                "{}:{}",
-                repo_full_name,
-                skill_path.clone().unwrap_or_else(|| ".".to_string())
-            );
-            if !seen.insert(result_id.clone()) {
-                continue;
-            }
-
-            let mut name = Path::new(
-                skill_path
-                    .as_deref()
-                    .unwrap_or(item.repository.name.as_str()),
-            )
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or(item.repository.name.as_str())
-            .to_string();
-            let mut description = item.repository.description.clone().unwrap_or_default();
-
-            let branch = item
-                .repository
-                .default_branch
-                .clone()
-                .unwrap_or_else(|| "main".to_string());
-            let raw_manifest_url = format!(
-                "https://raw.githubusercontent.com/{}/{}/{}",
-                repo_full_name, branch, item.path
-            );
-            if let Ok(manifest_response) = client.get(&raw_manifest_url).send().await {
-                if manifest_response.status().is_success() {
-                    match kind {
-                        GithubManifestKind::SkillJson => {
-                            if let Ok(manifest) =
-                                manifest_response.json::<RemoteSkillManifest>().await
-                            {
-                                if let Some(remote_name) = manifest.name {
-                                    if !remote_name.trim().is_empty() {
-                                        name = remote_name.trim().to_string();
-                                    }
-                                }
-                                if let Some(remote_description) = manifest.description {
-                                    if !remote_description.trim().is_empty() {
-                                        description = remote_description.trim().to_string();
-                                    }
-                                }
-                            }
-                        }
-                        GithubManifestKind::SkillMarkdown => {
-                            if let Ok(raw_markdown) = manifest_response.text().await {
-                                if let Some(manifest) = parse_skill_markdown_manifest(&raw_markdown)
-                                {
-                                    name = manifest.name;
-                                    if !manifest.description.trim().is_empty() {
-                                        description = manifest.description;
-                                    }
-                                } else {
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            results.push(SkillDiscoveryItem {
-                id: result_id,
-                name: name.clone(),
-                description,
-                repo_url: format!("https://github.com/{}.git", repo_full_name),
-                repo_full_name: repo_full_name.clone(),
-                repo_html_url: item.repository.html_url.clone(),
-                source: source.to_string(),
-                skill_path,
-                stars: item.repository.stargazers_count.unwrap_or(0),
-                updated_at: item.repository.updated_at.clone(),
-                installed: installed_names.contains(&name.to_lowercase()),
-            });
-        }
-
         Ok(results)
     }
 
@@ -960,11 +971,13 @@ impl SkillManager {
         }
         let params_json = serde_json::to_string(&params)?;
 
-        // Use Node.js to execute the skill
-        let output = Command::new("node")
-            .arg(&index_path)
-            .arg(&params_json)
-            .output()?;
+        let runtime = node_runtime::ensure_node_runtime()
+            .await
+            .map_err(|error| anyhow!("Node.js runtime unavailable: {}", error))?;
+
+        let mut command = Command::new(&runtime.node_command);
+        runtime.apply_to_command(&mut command);
+        let output = command.arg(&index_path).arg(&params_json).output()?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr);
@@ -1147,13 +1160,11 @@ Use weather APIs and summarize results.
             result.get("mode").and_then(Value::as_str),
             Some("markdown_skill")
         );
-        assert!(
-            result
-                .get("instructions")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .contains("weather APIs")
-        );
+        assert!(result
+            .get("instructions")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("weather APIs"));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -322,14 +322,15 @@ pub(super) fn collect_skill_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTo
         &mut tools,
         &mut tool_map,
         SKILL_INSTALL_TOOL,
-        "Install a skill from a git repository URL so the assistant can use new capabilities. \
-         Use only when user intent requires adding a capability and repository source is provided/approved."
+        "Install a skill package from ClawHub download URL (zip/tar.gz), \
+         a ClawHub skill page URL, or a skill slug. Git repository clone is disabled. \
+         Use only when user intent requires adding a capability and source is provided/approved."
             .to_string(),
         json!({
             "type": "object",
             "properties": {
                 "repo_url": { "type": "string" },
-                "skill_path": { "type": "string", "description": "Optional relative path to skill directory inside the repository." }
+                "skill_path": { "type": "string", "description": "Optional relative path to skill directory inside the downloaded package." }
             },
             "required": ["repo_url"]
         }),
@@ -340,8 +341,8 @@ pub(super) fn collect_skill_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTo
         &mut tools,
         &mut tool_map,
         SKILL_DISCOVER_TOOL,
-        "Discover installable skills from remote registries (OpenClaw/ClawHub-style SKILL.md first, with legacy skill.json compatibility). \
-         Uses SkillsMP API first when a SkillsMP key is configured in Settings, then falls back to GitHub code search. \
+        "Discover installable skills from ClawHub registry only (downloadable packages). \
+         Uses ClawHub API base configured in Settings. \
          Use this when no installed skill clearly matches the task."
             .to_string(),
         json!({

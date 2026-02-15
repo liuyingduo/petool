@@ -10,7 +10,7 @@
     <div class="install-row">
       <el-input
         v-model="repoUrl"
-        placeholder="https://github.com/owner/repo.git"
+        placeholder="Paste ClawHub download URL (zip/tar.gz)"
         clearable
       />
       <el-button type="primary" :loading="installingByUrl" @click="installByUrl">
@@ -39,8 +39,8 @@
           <h4>{{ item.name }}</h4>
           <p>{{ item.description || item.repo_full_name }}</p>
           <p class="discover-meta">
-            {{ item.repo_full_name }} · ★{{ item.stars }}
-            <span v-if="item.skill_path"> · path: {{ item.skill_path }}</span>
+            {{ item.repo_full_name }} | stars: {{ item.stars }}
+            <span v-if="item.skill_path"> | path: {{ item.skill_path }}</span>
           </p>
         </div>
         <el-button
@@ -50,22 +50,6 @@
           @click="installFromDiscovery(item)"
         >
           {{ item.installed ? 'Installed' : 'Install' }}
-        </el-button>
-      </div>
-    </div>
-
-    <div class="market-list">
-      <div
-        v-for="item in suggestedSkills"
-        :key="item.id"
-        class="market-item"
-      >
-        <div class="market-info">
-          <h4>{{ item.name }}</h4>
-          <p>{{ item.description }}</p>
-        </div>
-        <el-button size="small" :loading="installing === item.repo" @click="installFromRepo(item.repo)">
-          Install
         </el-button>
       </div>
     </div>
@@ -149,21 +133,6 @@ const discoverQuery = ref('')
 const skills = ref<Skill[]>([])
 const discoveredSkills = ref<SkillDiscoveryItem[]>([])
 
-const suggestedSkills = [
-  {
-    id: 'skill-installer',
-    name: 'Skill Installer',
-    description: 'Install and manage Codex skills',
-    repo: 'https://github.com/openclaw/openclaw.git'
-  },
-  {
-    id: 'file-analyzer',
-    name: 'File Analyzer',
-    description: 'Parse and analyze code files quickly',
-    repo: 'https://github.com/sst/opencode.git'
-  }
-]
-
 async function loadSkills() {
   loading.value = true
   try {
@@ -172,20 +141,6 @@ async function loadSkills() {
     ElMessage.error('Failed to load skills')
   } finally {
     loading.value = false
-  }
-}
-
-async function installFromRepo(repo: string) {
-  installing.value = repo
-  try {
-    await invoke('install_skill', { repoUrl: repo })
-    ElMessage.success('Skill installed')
-    await loadSkills()
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to install skill'
-    ElMessage.error(message)
-  } finally {
-    installing.value = null
   }
 }
 
@@ -224,7 +179,7 @@ async function installFromDiscovery(item: SkillDiscoveryItem) {
 async function installByUrl() {
   const url = repoUrl.value.trim()
   if (!url) {
-    ElMessage.warning('Please enter a repository URL')
+    ElMessage.warning('Please enter a ClawHub package URL')
     return
   }
 

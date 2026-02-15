@@ -5,8 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 export interface Config {
   api_key?: string
   api_base?: string
-  skillsmp_api_key?: string
-  skillsmp_api_base?: string
+  clawhub_api_key?: string
+  clawhub_api_base?: string
   model: string
   system_prompt?: string
   work_directory?: string
@@ -67,8 +67,8 @@ export interface BrowserConfig {
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
-    skillsmp_api_key: '',
-    skillsmp_api_base: 'https://skillsmp.com/api/v1',
+    clawhub_api_key: '',
+    clawhub_api_base: 'https://clawhub.ai',
     model: 'glm-5',
     system_prompt: '',
     conversation_workspaces: {},

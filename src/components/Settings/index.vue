@@ -25,19 +25,19 @@
             />
           </el-form-item>
 
-          <el-form-item label="SkillsMP Key">
+          <el-form-item label="ClawHub Key">
             <el-input
-              v-model="localConfig.skillsmp_api_key"
+              v-model="localConfig.clawhub_api_key"
               type="password"
               placeholder="Optional: sk_live_..."
               show-password
             />
           </el-form-item>
 
-          <el-form-item label="SkillsMP API">
+          <el-form-item label="ClawHub API">
             <el-input
-              v-model="localConfig.skillsmp_api_base"
-              placeholder="https://skillsmp.com/api/v1"
+              v-model="localConfig.clawhub_api_base"
+              placeholder="https://clawhub.ai"
             />
           </el-form-item>
 
@@ -389,8 +389,8 @@ const defaultBrowserConfig: BrowserConfig = {
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
-  skillsmp_api_key: '',
-  skillsmp_api_base: 'https://skillsmp.com/api/v1',
+  clawhub_api_key: '',
+  clawhub_api_base: 'https://clawhub.ai',
   model: 'glm-5',
   system_prompt: '',
   work_directory: '',

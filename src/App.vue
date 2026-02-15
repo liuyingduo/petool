@@ -764,7 +764,7 @@ const approvalSubtitle = computed(() => {
     return '为了完成你的请求，我需要运行一条本地命令。'
   }
   if (toolName === 'skills_install_from_repo') {
-    return '为了解决当前问题，我希望从仓库安装一个技能。'
+    return '为了解决当前问题，我希望从 ClawHub 下载并安装一个技能。'
   }
   if (toolName.startsWith('mcp__')) {
     return `我需要调用外部工具：${renderToolLabel(request.toolName)}`
@@ -790,7 +790,7 @@ const approvalDetailText = computed(() => {
       (typeof args.repo_url === 'string' && args.repo_url.trim()) ||
       (typeof args.repoUrl === 'string' && args.repoUrl.trim())
     if (repoUrlRaw) {
-      return `仓库：${truncateMiddle(repoUrlRaw, 72)}`
+      return `来源：${truncateMiddle(repoUrlRaw, 72)}`
     }
   }
   if (toolName.startsWith('mcp__')) {

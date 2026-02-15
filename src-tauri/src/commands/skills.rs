@@ -9,16 +9,16 @@ use tokio::sync::Mutex as AsyncMutex;
 
 pub type SkillManagerState = Arc<AsyncMutex<SkillManager>>;
 
-fn resolve_skillsmp_settings() -> (Option<String>, Option<String>) {
+fn resolve_clawhub_settings() -> (Option<String>, Option<String>) {
     if let Ok(config) = load_config::<Config>() {
         let key = config
-            .skillsmp_api_key
+            .clawhub_api_key
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let base = config
-            .skillsmp_api_base
+            .clawhub_api_base
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -34,7 +34,7 @@ fn resolve_skillsmp_settings() -> (Option<String>, Option<String>) {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return (None, None);
     };
-    let key = Regex::new(r#""skillsmp_api_key"\s*:\s*"([^"]*)""#)
+    let key = Regex::new(r#""clawhub_api_key"\s*:\s*"([^"]*)""#)
         .ok()
         .and_then(|regex| regex.captures(&raw))
         .and_then(|caps| {
@@ -42,7 +42,7 @@ fn resolve_skillsmp_settings() -> (Option<String>, Option<String>) {
                 .map(|capture| capture.as_str().trim().to_string())
         })
         .filter(|value| !value.is_empty());
-    let base = Regex::new(r#""skillsmp_api_base"\s*:\s*"([^"]*)""#)
+    let base = Regex::new(r#""clawhub_api_base"\s*:\s*"([^"]*)""#)
         .ok()
         .and_then(|regex| regex.captures(&raw))
         .and_then(|caps| {
@@ -82,14 +82,14 @@ pub async fn discover_skills(
     query: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<SkillDiscoveryItem>, String> {
-    let (skillsmp_api_key, skillsmp_api_base) = resolve_skillsmp_settings();
+    let (clawhub_api_key, clawhub_api_base) = resolve_clawhub_settings();
     let manager = skill_manager.lock().await;
     manager
         .discover_skills(
             query.as_deref(),
             limit.unwrap_or(8) as usize,
-            skillsmp_api_key.as_deref(),
-            skillsmp_api_base.as_deref(),
+            clawhub_api_key.as_deref(),
+            clawhub_api_base.as_deref(),
         )
         .await
         .map_err(|e: anyhow::Error| e.to_string())

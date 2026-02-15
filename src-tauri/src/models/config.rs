@@ -13,12 +13,12 @@ fn default_browser_default_profile() -> String {
     "openclaw".to_string()
 }
 
-fn default_skillsmp_api_base() -> String {
-    "https://skillsmp.com/api/v1".to_string()
+fn default_clawhub_api_base() -> String {
+    "https://clawhub.ai".to_string()
 }
 
-fn default_skillsmp_api_base_option() -> Option<String> {
-    Some(default_skillsmp_api_base())
+fn default_clawhub_api_base_option() -> Option<String> {
+    Some(default_clawhub_api_base())
 }
 
 fn default_browser_operation_timeout_ms() -> u64 {
@@ -42,9 +42,9 @@ pub struct Config {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
     #[serde(default)]
-    pub skillsmp_api_key: Option<String>,
-    #[serde(default = "default_skillsmp_api_base_option")]
-    pub skillsmp_api_base: Option<String>,
+    pub clawhub_api_key: Option<String>,
+    #[serde(default = "default_clawhub_api_base_option")]
+    pub clawhub_api_base: Option<String>,
     pub model: String,
     pub system_prompt: Option<String>,
     pub work_directory: Option<String>,
@@ -200,8 +200,8 @@ impl Default for Config {
         Self {
             api_key: None,
             api_base: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
-            skillsmp_api_key: None,
-            skillsmp_api_base: Some(default_skillsmp_api_base()),
+            clawhub_api_key: None,
+            clawhub_api_base: Some(default_clawhub_api_base()),
             model: "glm-5".to_string(),
             system_prompt: None,
             work_directory: None,
@@ -232,8 +232,8 @@ mod tests {
         let config = Config::default();
         assert!(!config.auto_approve_tool_requests);
         assert_eq!(
-            config.skillsmp_api_base,
-            Some("https://skillsmp.com/api/v1".to_string())
+            config.clawhub_api_base,
+            Some("https://clawhub.ai".to_string())
         );
         assert!(config.browser.enabled);
         assert_eq!(config.browser.default_profile, "openclaw");
