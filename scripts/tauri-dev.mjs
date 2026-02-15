@@ -133,6 +133,14 @@ function resolveTauriLaunch() {
     process.platform === "win32" ? "tauri.cmd" : "tauri",
   );
   if (fs.existsSync(tauriBin)) {
+    if (process.platform === "win32") {
+      return {
+        // Node 24 on Windows rejects spawning .cmd directly with shell:false.
+        command: "cmd.exe",
+        args: ["/d", "/c", tauriBin, "dev"],
+        shell: false,
+      };
+    }
     return { command: tauriBin, args: ["dev"], shell: false };
   }
 
@@ -151,7 +159,15 @@ function resolveTauriLaunch() {
     };
   }
 
-  return { command: "tauri", args: ["dev"], shell: true };
+  if (process.platform === "win32") {
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/c", "tauri", "dev"],
+      shell: false,
+    };
+  }
+
+  return { command: "tauri", args: ["dev"], shell: false };
 }
 
 const launch = resolveTauriLaunch();

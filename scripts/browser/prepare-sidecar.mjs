@@ -18,11 +18,24 @@ function run(command, args, opts = {}) {
     process.platform === 'win32' && !command.endsWith('.cmd') && ['npm', 'npx'].includes(command)
       ? `${command}.cmd`
       : command
-  const result = spawnSync(executable, args, {
-    stdio: 'inherit',
-    shell: false,
-    ...opts
-  })
+
+  const isWindowsCmd = process.platform === 'win32' && executable.toLowerCase().endsWith('.cmd')
+  const result = isWindowsCmd
+    ? spawnSync('cmd.exe', ['/d', '/c', executable, ...args], {
+        stdio: 'inherit',
+        shell: false,
+        ...opts
+      })
+    : spawnSync(executable, args, {
+        stdio: 'inherit',
+        shell: false,
+        ...opts
+      })
+
+  if (result.error) {
+    throw new Error(`Failed to start command: ${executable} ${args.join(' ')} (${result.error.code || result.error.message})`)
+  }
+
   if (result.status !== 0) {
     throw new Error(`Command failed: ${executable} ${args.join(' ')}`)
   }
