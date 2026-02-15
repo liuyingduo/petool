@@ -27,21 +27,15 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
   const toolStreamItems = ref<ToolStreamItem[]>([])
   const toolHistoryByMessage = ref<Record<string, ToolStreamItem[]>>({})
   const toolListCollapsedByMessage = ref<Record<string, boolean>>({})
-  const hiddenAssistantMessages = ref<Record<string, boolean>>({})
-  const assistantContentOverrides = ref<Record<string, string>>({})
 
   function initializeAssistantArtifacts(messageId: string) {
     toolHistoryByMessage.value[messageId] = []
     toolListCollapsedByMessage.value[messageId] = false
-    hiddenAssistantMessages.value[messageId] = false
-    delete assistantContentOverrides.value[messageId]
   }
 
   function clearAssistantArtifacts(messageId: string) {
     delete toolHistoryByMessage.value[messageId]
     delete toolListCollapsedByMessage.value[messageId]
-    delete hiddenAssistantMessages.value[messageId]
-    delete assistantContentOverrides.value[messageId]
   }
 
   function collapseActiveReasoning() {
@@ -71,7 +65,6 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
   function isRenderableMessage(message: Message) {
     if (message.role === 'user') return true
     if (message.role !== 'assistant') return false
-    if (hiddenAssistantMessages.value[message.id]) return false
     if (isStreamingMessage(message.id)) return true
 
     const hasContent = Boolean(getDisplayedMessageContent(message).trim())
@@ -86,128 +79,76 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
     const hydratedReasoning: Record<string, ReasoningEntry> = {}
     const hydratedToolHistory: Record<string, ToolStreamItem[]> = {}
     const hydratedCollapseMap: Record<string, boolean> = {}
-    const nextHiddenMessages: Record<string, boolean> = {}
-    const nextContentOverrides: Record<string, string> = {}
 
-    let index = 0
-    while (index < messages.length) {
+    for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index]
-      if (message.role !== 'assistant') {
-        index += 1
-        continue
+      if (message.role !== 'assistant') continue
+
+      const reasoningText = normalizeReasoningText(message.reasoning)
+      if (reasoningText) {
+        hydratedReasoning[message.id] = {
+          text: reasoningText,
+          collapsed: true
+        }
       }
 
       const toolCalls = extractMessageToolCalls(message)
-      const reasoningText = normalizeReasoningText(message.reasoning)
+      if (toolCalls.length === 0) continue
 
-      if (toolCalls.length === 0) {
-        if (reasoningText) {
-          hydratedReasoning[message.id] = {
-            text: reasoningText,
-            collapsed: true
-          }
+      const toolItems: ToolStreamItem[] = []
+      const toolItemsById = new Map<string, ToolStreamItem>()
+
+      for (const call of toolCalls) {
+        const id =
+          (typeof call?.id === 'string' && call.id.trim()) ||
+          `${message.id}-tool-${toolItems.length}`
+        const name =
+          (typeof call?.tool_name === 'string' && call.tool_name.trim()) ||
+          (typeof call?.toolName === 'string' && call.toolName.trim()) ||
+          'tool'
+        const item: ToolStreamItem = {
+          id,
+          name,
+          arguments: serializeToolArguments(call?.arguments),
+          result: '',
+          status: 'running',
+          index: toolItems.length
         }
-        index += 1
-        continue
+        toolItems.push(item)
+        toolItemsById.set(id, item)
       }
 
-      let segmentEnd = index + 1
-      while (segmentEnd < messages.length) {
-        const next = messages[segmentEnd]
-        if (next.role === 'user' || next.role === 'system') break
-        segmentEnd += 1
-      }
+      // Tool result messages are persisted immediately after the assistant tool-call message.
+      for (let cursor = index + 1; cursor < messages.length; cursor += 1) {
+        const toolMessage = messages[cursor]
+        if (toolMessage.role !== 'tool') break
 
-      const rootAssistantId = message.id
-      const mergedReasoningParts: string[] = []
-      let mergedContent = ''
-      const mergedToolItems: ToolStreamItem[] = []
-      const mergedToolItemsById = new Map<string, ToolStreamItem>()
-
-      for (let cursor = index; cursor < segmentEnd; cursor += 1) {
-        const segmentMessage = messages[cursor]
-        if (segmentMessage.role === 'assistant') {
-          if (segmentMessage.id !== rootAssistantId) {
-            nextHiddenMessages[segmentMessage.id] = true
-          }
-
-          const assistantReasoning = normalizeReasoningText(segmentMessage.reasoning)
-          if (assistantReasoning) {
-            mergedReasoningParts.push(assistantReasoning)
-          }
-
-          if (segmentMessage.content.trim()) {
-            mergedContent = segmentMessage.content
-          }
-
-          const segmentToolCalls = extractMessageToolCalls(segmentMessage)
-          for (const call of segmentToolCalls) {
-            const id =
-              (typeof call?.id === 'string' && call.id.trim()) ||
-              `${segmentMessage.id}-tool-${mergedToolItems.length}`
-            if (mergedToolItemsById.has(id)) continue
-
-            const name =
-              (typeof call?.tool_name === 'string' && call.tool_name.trim()) ||
-              (typeof call?.toolName === 'string' && call.toolName.trim()) ||
-              'tool'
-            const item: ToolStreamItem = {
-              id,
-              name,
-              arguments: serializeToolArguments(call?.arguments),
-              result: '',
-              status: 'running',
-              index: mergedToolItems.length
-            }
-            mergedToolItemsById.set(id, item)
-            mergedToolItems.push(item)
-          }
-          continue
-        }
-
-        if (segmentMessage.role !== 'tool') continue
-
-        const toolMeta = extractMessageToolMeta(segmentMessage)
-        let target = toolMeta.id ? mergedToolItemsById.get(toolMeta.id) : undefined
+        const toolMeta = extractMessageToolMeta(toolMessage)
+        let target = toolMeta.id ? toolItemsById.get(toolMeta.id) : undefined
         if (!target && toolMeta.name) {
-          target = mergedToolItems.find((item) => item.name === toolMeta.name && item.status === 'running')
+          target = toolItems.find((item) => item.name === toolMeta.name && item.status === 'running')
         }
         if (!target) {
-          target = mergedToolItems.find((item) => item.status === 'running') || mergedToolItems[mergedToolItems.length - 1]
+          target = toolItems.find((item) => item.status === 'running') || toolItems[toolItems.length - 1]
         }
         if (!target) continue
 
         if (toolMeta.name) {
           target.name = toolMeta.name
         }
-        target.result = segmentMessage.content || ''
+        target.result = toolMessage.content || ''
         target.status = inferToolResultStatus(target.result)
       }
 
-      if (mergedReasoningParts.length > 0) {
-        hydratedReasoning[rootAssistantId] = {
-          text: mergeReasoningParts(mergedReasoningParts),
-          collapsed: true
-        }
+      if (toolItems.length > 0) {
+        hydratedToolHistory[message.id] = toolItems
+        hydratedCollapseMap[message.id] = false
       }
-
-      if (mergedToolItems.length > 0) {
-        hydratedToolHistory[rootAssistantId] = mergedToolItems
-        hydratedCollapseMap[rootAssistantId] = false
-      }
-
-      if (mergedContent.trim()) {
-        nextContentOverrides[rootAssistantId] = mergedContent
-      }
-
-      index = segmentEnd
     }
 
     reasoningByMessage.value = hydratedReasoning
     toolHistoryByMessage.value = hydratedToolHistory
     toolListCollapsedByMessage.value = hydratedCollapseMap
-    hiddenAssistantMessages.value = nextHiddenMessages
-    assistantContentOverrides.value = nextContentOverrides
   }
 
   function shouldShowMessageBubble(message: Message) {
@@ -325,7 +266,7 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
   function getDisplayedMessageContent(message: Message) {
     if (message.role !== 'assistant') return message.content
 
-    const baseContent = assistantContentOverrides.value[message.id] ?? message.content
+    const baseContent = message.content
     const reasoningText = getReasoningEntry(message.id)?.text || ''
     return stripReasoningPrefixOverlap(baseContent, reasoningText)
   }
@@ -347,37 +288,6 @@ export function useChatMessageArtifacts(options: UseChatMessageArtifactsOptions)
   function normalizeReasoningText(value: unknown) {
     if (typeof value !== 'string') return ''
     return value.trim()
-  }
-
-  function mergeReasoningParts(parts: string[]) {
-    let merged = ''
-    for (const part of parts) {
-      merged = mergeTextWithOverlap(merged, part)
-    }
-    return merged
-  }
-
-  function mergeTextWithOverlap(base: string, next: string) {
-    const left = base.trim()
-    const right = next.trim()
-    if (!left) return right
-    if (!right) return left
-    if (left.includes(right)) return left
-    if (right.includes(left)) return right
-
-    const max = Math.min(left.length, right.length)
-    let overlap = 0
-    for (let len = max; len >= 10; len -= 1) {
-      if (left.slice(left.length - len) === right.slice(0, len)) {
-        overlap = len
-        break
-      }
-    }
-
-    if (overlap > 0) {
-      return `${left}${right.slice(overlap)}`
-    }
-    return `${left}\n\n${right}`
   }
 
   function stripReasoningPrefixOverlap(content: string, reasoningText: string) {

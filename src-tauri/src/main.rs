@@ -84,6 +84,8 @@ async fn main() {
             chat::get_messages,
             chat::create_conversation,
             chat::delete_conversation,
+            chat::rename_conversation,
+            chat::update_conversation_model,
             // File system commands
             fs::select_folder,
             fs::scan_directory,

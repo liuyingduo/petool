@@ -88,6 +88,44 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function renameConversation(id: string, title: string) {
+    try {
+      await invoke('rename_conversation', { id, title })
+      const now = new Date().toISOString()
+      conversations.value = conversations.value.map((conversation) =>
+        conversation.id === id
+          ? {
+              ...conversation,
+              title,
+              updated_at: now
+            }
+          : conversation
+      )
+    } catch (error) {
+      console.error('Failed to rename conversation:', error)
+      throw error
+    }
+  }
+
+  async function updateConversationModel(id: string, model: string) {
+    try {
+      await invoke('update_conversation_model', { id, model })
+      const now = new Date().toISOString()
+      conversations.value = conversations.value.map((conversation) =>
+        conversation.id === id
+          ? {
+              ...conversation,
+              model,
+              updated_at: now
+            }
+          : conversation
+      )
+    } catch (error) {
+      console.error('Failed to update conversation model:', error)
+      throw error
+    }
+  }
+
   function setCurrentConversation(id: string | null) {
     currentConversationId.value = id
   }
@@ -138,6 +176,8 @@ export const useChatStore = defineStore('chat', () => {
     loadMessages,
     createConversation,
     deleteConversation,
+    renameConversation,
+    updateConversationModel,
     setCurrentConversation,
     addMessage,
     updateLastMessage,

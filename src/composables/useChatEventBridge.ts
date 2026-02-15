@@ -43,18 +43,15 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
   const unlistenFns: Array<() => void> = []
   let anonymousToolCounter = 0
 
-  function appendWithOverlap(base: string, chunk: string) {
+  function mergeToolArguments(base: string, chunk: string) {
     if (!base) return chunk
     if (!chunk) return base
-    if (base.includes(chunk)) return base
-    if (chunk.startsWith(base)) return chunk
 
-    const max = Math.min(base.length, chunk.length)
-    for (let len = max; len >= 6; len -= 1) {
-      if (base.slice(base.length - len) === chunk.slice(0, len)) {
-        return base + chunk.slice(len)
-      }
-    }
+    // Some providers emit full snapshots, others emit incremental chunks.
+    // For tool JSON, use conservative dedupe and avoid overlap trimming.
+    if (chunk === base) return base
+    if (chunk.startsWith(base) || chunk.includes(base)) return chunk
+    if (base.includes(chunk) || base.endsWith(chunk)) return base
     return base + chunk
   }
 
@@ -176,10 +173,7 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
       if (!options.reasoningByMessage.value[id]) {
         options.reasoningByMessage.value[id] = { text: '', collapsed: false }
       }
-      options.reasoningByMessage.value[id].text = appendWithOverlap(
-        options.reasoningByMessage.value[id].text,
-        chunk
-      )
+      options.reasoningByMessage.value[id].text += chunk
       options.reasoningByMessage.value[id].collapsed = false
     })
   )
@@ -228,7 +222,7 @@ export async function registerChatEventListeners(options: ChatEventBridgeOptions
       if (typeof payload.index === 'number' && Number.isFinite(payload.index)) {
         item.index = payload.index
       }
-      if (payload.argumentsChunk) item.arguments += payload.argumentsChunk
+      if (payload.argumentsChunk) item.arguments = mergeToolArguments(item.arguments, payload.argumentsChunk)
       normalizeToolOrder()
     })
   )

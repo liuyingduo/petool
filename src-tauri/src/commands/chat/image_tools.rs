@@ -183,10 +183,11 @@ pub(super) async fn execute_image_understand(
     arguments: &Value,
     workspace_root: &Path,
     llm_service: &LlmService,
+    default_model: &str,
 ) -> Result<Value, String> {
     let prompt = read_string_argument(arguments, "prompt")?;
-    let model =
-        read_optional_string_argument(arguments, "model").unwrap_or_else(|| "glm-4.6v".to_string());
+    let model = read_optional_string_argument(arguments, "model")
+        .unwrap_or_else(|| default_model.to_string());
     let enable_thinking = read_bool_argument(arguments, "thinking", false);
     let max_bytes =
         read_u64_argument(arguments, "max_bytes", 4 * 1024 * 1024).clamp(8_192, 8_388_608) as usize;

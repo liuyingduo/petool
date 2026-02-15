@@ -9,7 +9,10 @@ export interface Config {
   clawhub_api_base?: string
   ark_api_key?: string
   ark_api_base?: string
+  minimax_api_key?: string
   image_model: string
+  image_understand_model: string
+  video_model: string
   image_size: string
   image_watermark: boolean
   model: string
@@ -76,13 +79,16 @@ export const useConfigStore = defineStore('config', () => {
     clawhub_api_base: 'https://clawhub.ai',
     ark_api_key: '',
     ark_api_base: 'https://ark.cn-beijing.volces.com/api/v3',
+    minimax_api_key: '',
     image_model: 'doubao-seedream-4-5-251128',
+    image_understand_model: 'glm-4.6v',
+    video_model: 'doubao-seedance-1-0-pro-250528',
     image_size: '2K',
     image_watermark: true,
     model: 'glm-5',
     system_prompt: '',
     conversation_workspaces: {},
-    theme: 'dark',
+    theme: 'light',
     tool_display_mode: 'compact',
     mcp_servers: [],
     tool_permissions: {},

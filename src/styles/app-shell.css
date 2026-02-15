@@ -302,44 +302,74 @@ label {
   color: #4a7c59;
 }
 
-.conv-delete-btn {
+.conv-menu-anchor {
   position: absolute;
   top: 50%;
   right: 10px;
-  width: 24px;
-  height: 24px;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+.conv-menu-trigger {
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: #b8b2ac;
+  color: #b7b0a8;
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 2px;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%);
   transition: opacity 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+  padding: 0;
 }
 
-.conv-delete-btn .material-icons-round {
-  font-size: 16px;
+.conv-menu-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
-.conv-item-row:hover .conv-delete-btn,
-.conv-item-row:focus-within .conv-delete-btn,
-.conv-item-row.active .conv-delete-btn {
+.conv-item-row:hover .conv-menu-trigger,
+.conv-item-row:focus-within .conv-menu-trigger,
+.conv-item-row.active .conv-menu-trigger {
+  opacity: 1;
+}
+
+.conv-menu-trigger:hover:not(:disabled) {
+  background: #e7e2da;
+  color: #5f574d;
   opacity: 1;
   pointer-events: auto;
 }
 
-.conv-delete-btn:hover:not(:disabled) {
-  background: #fcebea;
+.conv-menu-trigger:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.conv-item-row:hover .conv-menu-trigger,
+.conv-item-row:focus-within .conv-menu-trigger,
+.conv-item-row.active .conv-menu-trigger {
+  pointer-events: auto;
+}
+
+:deep(.conv-actions-menu.el-dropdown-menu) {
+  min-width: 132px;
+}
+
+:deep(.conv-actions-menu .el-dropdown-menu__item.danger) {
   color: #c2410c;
 }
 
-.conv-delete-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
+:deep(.conv-actions-menu .el-dropdown-menu__item.danger:not(.is-disabled):hover) {
+  background: #fef2f2;
+  color: #b91c1c;
 }
 
 .empty-tip {

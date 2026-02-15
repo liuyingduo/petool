@@ -184,7 +184,9 @@ const DEFAULT_WEB_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_WEB_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
 const DEFAULT_EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
+const DEFAULT_GLM_API_BASE: &str = "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_ARK_API_BASE: &str = "https://ark.cn-beijing.volces.com/api/v3";
+const DEFAULT_MINIMAX_ANTHROPIC_API_BASE: &str = "https://api.minimaxi.com/anthropic";
 const REPEATED_TOOL_GUARD_TEXT: &str = "Detected repeated identical tool calls from the model. Automatic tool loop was stopped. Please provide a more specific target (file/directory) and try again.";
 const STREAM_PAUSED_TEXT: &str = "（已暂停）";
 
@@ -274,8 +276,8 @@ async fn load_conversation_context(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> Result<Vec<ChatMessage>, String> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT role, content, tool_calls FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "SELECT role, content, tool_calls, reasoning FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
     )
     .bind(conversation_id)
     .fetch_all(pool)
@@ -284,7 +286,7 @@ async fn load_conversation_context(
 
     let mut messages = Vec::new();
 
-    for (role, content, tool_calls_raw) in rows {
+    for (role, content, tool_calls_raw, reasoning_raw) in rows {
         match role.as_str() {
             "assistant" => {
                 let tool_calls = tool_calls_raw
@@ -300,6 +302,11 @@ async fn load_conversation_context(
                     },
                     tool_calls,
                     tool_call_id: None,
+                    reasoning: reasoning_raw
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string()),
                 });
             }
             "tool" => {
@@ -318,6 +325,7 @@ async fn load_conversation_context(
                     content: Some(content),
                     tool_calls: None,
                     tool_call_id,
+                    reasoning: None,
                 });
             }
             _ => {
@@ -326,6 +334,7 @@ async fn load_conversation_context(
                     content: Some(content),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning: None,
                 });
             }
         }
@@ -347,6 +356,92 @@ async fn resolve_conversation_model(
         .map(|model| model.unwrap_or_else(|| fallback_model.to_string()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextModelProvider {
+    Glm,
+    Doubao,
+    MiniMax,
+}
+
+fn detect_text_model_provider(model: &str) -> TextModelProvider {
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized.starts_with("minimax-") {
+        return TextModelProvider::MiniMax;
+    }
+    if normalized.starts_with("doubao-") {
+        return TextModelProvider::Doubao;
+    }
+    TextModelProvider::Glm
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn first_non_empty(values: Vec<Option<String>>) -> Option<String> {
+    values.into_iter().flatten().find(|value| !value.trim().is_empty())
+}
+
+fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, String> {
+    match detect_text_model_provider(model) {
+        TextModelProvider::Glm => {
+            let api_key = first_non_empty(vec![
+                config.api_key.clone(),
+                env_value("GLM_API_KEY"),
+                env_value("OPENAI_API_KEY"),
+            ])
+            .ok_or_else(|| "GLM API key not set".to_string())?;
+            Ok(LlmService::new(
+                api_key,
+                Some(DEFAULT_GLM_API_BASE.to_string()),
+            ))
+        }
+        TextModelProvider::Doubao => {
+            let api_key = first_non_empty(vec![
+                config.ark_api_key.clone(),
+                env_value("ARK_API_KEY"),
+                env_value("DOUBAO_API_KEY"),
+                config.api_key.clone(),
+            ])
+            .ok_or_else(|| "Doubao API key not set".to_string())?;
+            Ok(LlmService::new(
+                api_key,
+                Some(DEFAULT_ARK_API_BASE.to_string()),
+            ))
+        }
+        TextModelProvider::MiniMax => {
+            let api_key = first_non_empty(vec![
+                config.minimax_api_key.clone(),
+                env_value("MINIMAX_API_KEY"),
+                env_value("ANTHROPIC_API_KEY"),
+            ])
+            .ok_or_else(|| "MiniMax API key not set".to_string())?;
+            Ok(LlmService::new(
+                api_key,
+                Some(DEFAULT_MINIMAX_ANTHROPIC_API_BASE.to_string()),
+            ))
+        }
+    }
+}
+
+fn resolve_image_generation_llm_service(config: &Config) -> Result<LlmService, String> {
+    let api_key = first_non_empty(vec![
+        config.ark_api_key.clone(),
+        env_value("ARK_API_KEY"),
+        env_value("DOUBAO_API_KEY"),
+        config.api_key.clone(),
+    ])
+    .ok_or_else(|| "Image API key not set".to_string())?;
+
+    Ok(LlmService::new(
+        api_key,
+        Some(DEFAULT_ARK_API_BASE.to_string()),
+    ))
+}
+
 fn prepend_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<&str>) {
     let Some(system_prompt) = system_prompt else {
         return;
@@ -364,6 +459,7 @@ fn prepend_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<
             content: Some(trimmed.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         },
     );
 }
@@ -388,6 +484,7 @@ Use workspace_list_directory only for quick non-recursive inspection of one dire
             content: Some(guidance.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         },
     );
 }
@@ -405,6 +502,7 @@ fn prepend_skills_usage_guidance(messages: &mut Vec<ChatMessage>, skills_guidanc
             content: Some(trimmed.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         },
     );
 }
@@ -627,6 +725,7 @@ async fn persist_tool_result_message(
         content: Some(result_text),
         tool_calls: None,
         tool_call_id: Some(tool_call.id.clone()),
+        reasoning: None,
     });
 
     Ok(())
@@ -2022,8 +2121,10 @@ async fn execute_image_understand(
     arguments: &Value,
     workspace_root: &Path,
     llm_service: &LlmService,
+    default_model: &str,
 ) -> Result<Value, String> {
-    image_tools::execute_image_understand(arguments, workspace_root, llm_service).await
+    image_tools::execute_image_understand(arguments, workspace_root, llm_service, default_model)
+        .await
 }
 async fn execute_workspace_process_start(
     arguments: &Value,
@@ -2315,6 +2416,7 @@ async fn execute_core_task(
                 content: Some(prompt.clone()),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning: None,
             }],
         )
         .await
@@ -2351,7 +2453,7 @@ async fn execute_core_batch_safe_tool(
         BROWSER_NAVIGATE_TOOL => execute_browser_navigate(arguments).await,
         IMAGE_PROBE_TOOL => execute_image_probe(arguments, workspace_root).await,
         IMAGE_UNDERSTAND_TOOL => {
-            execute_image_understand(arguments, workspace_root, llm_service).await
+            execute_image_understand(arguments, workspace_root, llm_service, "glm-4.6v").await
         }
         SESSIONS_LIST_TOOL => execute_sessions_list(arguments, pool).await,
         SESSIONS_HISTORY_TOOL => execute_sessions_history(arguments, pool).await,
@@ -2432,6 +2534,7 @@ async fn execute_core_batch(
 async fn execute_runtime_tool(
     mcp_state: &McpState,
     skill_manager_state: &SkillManagerState,
+    config: &Config,
     runtime_tool: RuntimeTool,
     arguments: &Value,
     workspace_root: &Path,
@@ -2527,7 +2630,20 @@ async fn execute_runtime_tool(
         RuntimeTool::BrowserNavigate => execute_browser_navigate(arguments).await,
         RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
         RuntimeTool::ImageUnderstand => {
-            execute_image_understand(arguments, workspace_root, llm_service).await
+            let image_understand_model = config.image_understand_model.trim().to_string();
+            let default_model = if image_understand_model.is_empty() {
+                "glm-4.6v".to_string()
+            } else {
+                image_understand_model
+            };
+            let image_understand_service = resolve_text_llm_service(config, &default_model)?;
+            execute_image_understand(
+                arguments,
+                workspace_root,
+                &image_understand_service,
+                &default_model,
+            )
+            .await
         }
         RuntimeTool::SessionsList => execute_sessions_list(arguments, pool).await,
         RuntimeTool::SessionsHistory => execute_sessions_history(arguments, pool).await,
@@ -2544,6 +2660,7 @@ async fn execute_runtime_tool(
 async fn execute_tool_call(
     mcp_state: &McpState,
     skill_manager_state: &SkillManagerState,
+    config: &Config,
     tool_map: &HashMap<String, RuntimeTool>,
     tool_call: &ChatToolCall,
     workspace_root: &Path,
@@ -2561,6 +2678,7 @@ async fn execute_tool_call(
     execute_runtime_tool(
         mcp_state,
         skill_manager_state,
+        config,
         runtime_tool,
         &arguments,
         workspace_root,
@@ -2649,21 +2767,11 @@ pub async fn generate_image(
     }
 
     let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-    let api_key = config
-        .ark_api_key
-        .clone()
-        .or(config.api_key.clone())
-        .ok_or("Image API key not set".to_string())?;
-    let api_base = config
-        .ark_api_base
-        .clone()
-        .or(config.api_base.clone())
-        .unwrap_or_else(|| DEFAULT_ARK_API_BASE.to_string());
     let image_model = model.unwrap_or_else(|| config.image_model.clone());
     let image_size = size.unwrap_or_else(|| config.image_size.clone());
     let image_watermark = watermark.unwrap_or(config.image_watermark);
 
-    let llm_service = LlmService::new(api_key, Some(api_base));
+    let llm_service = resolve_image_generation_llm_service(&config)?;
     let image_url = llm_service
         .generate_image(&image_model, trimmed_prompt, &image_size, image_watermark)
         .await
@@ -2749,17 +2857,13 @@ pub async fn send_message(
     content: String,
 ) -> Result<String, String> {
     let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-    let api_key = config
-        .api_key
-        .clone()
-        .ok_or("API key not set".to_string())?;
-    let llm_service = LlmService::new(api_key, config.api_base.clone());
 
     let pool = {
         let guard = state.lock().map_err(|e| e.to_string())?;
         guard.db().pool().clone()
     };
     let model_to_use = resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
+    let llm_service = resolve_text_llm_service(&config, &model_to_use)?;
 
     insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
 
@@ -2790,11 +2894,6 @@ pub async fn stream_message(
 
     let result = async {
         let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
-        let api_key = config
-            .api_key
-            .clone()
-            .ok_or("API key not set".to_string())?;
-        let llm_service = LlmService::new(api_key, config.api_base.clone());
         let mcp_state = mcp_manager.inner();
         let skill_state = skill_manager.inner();
         let skills_guidance = build_skills_usage_guidance(skill_state).await;
@@ -2810,6 +2909,7 @@ pub async fn stream_message(
         };
         let model_to_use =
             resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
+        let llm_service = resolve_text_llm_service(&config, &model_to_use)?;
 
         insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
 
@@ -2926,6 +3026,11 @@ pub async fn stream_message(
                 },
                 tool_calls: Some(stream_result.tool_calls.clone()),
                 tool_call_id: None,
+                reasoning: if stream_result.reasoning.trim().is_empty() {
+                    None
+                } else {
+                    Some(stream_result.reasoning.clone())
+                },
             });
 
             update_repeated_signature_rounds(
@@ -3041,6 +3146,7 @@ pub async fn stream_message(
                 let tool_result = execute_tool_call(
                     mcp_state,
                     skill_state,
+                    &config,
                     &tool_map,
                     &tool_call,
                     &workspace_root,
@@ -3302,6 +3408,70 @@ pub async fn delete_conversation(state: State<'_, AppState>, id: String) -> Resu
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_conversation(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    let trimmed_title = title.trim();
+    if trimmed_title.is_empty() {
+        return Err("Conversation title cannot be empty".to_string());
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let pool = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.db().pool().clone()
+    };
+
+    let result = sqlx::query("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
+        .bind(trimmed_title)
+        .bind(&now)
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() == 0 {
+        return Err(format!("Conversation not found: {}", id));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_conversation_model(
+    state: State<'_, AppState>,
+    id: String,
+    model: String,
+) -> Result<(), String> {
+    let trimmed_model = model.trim();
+    if trimmed_model.is_empty() {
+        return Err("Conversation model cannot be empty".to_string());
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let pool = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.db().pool().clone()
+    };
+
+    let result = sqlx::query("UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?")
+        .bind(trimmed_model)
+        .bind(&now)
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() == 0 {
+        return Err(format!("Conversation not found: {}", id));
+    }
 
     Ok(())
 }

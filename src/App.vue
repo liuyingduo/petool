@@ -52,7 +52,7 @@
 
         <div class="conversation-list no-scrollbar">
           <div
-            v-for="(conv, index) in chatStore.conversations"
+            v-for="(conv, index) in conversationsForDisplay"
             :key="conv.id"
             class="conv-item-row"
             :class="{ active: conv.id === chatStore.currentConversationId }"
@@ -66,16 +66,36 @@
               <span class="material-icons-round">{{ getConversationIcon(index) }}</span>
               <span class="conv-title">{{ conv.title }}</span>
             </button>
-            <button
-              class="conv-delete-btn"
-              type="button"
-              title="删除会话"
-              aria-label="删除会话"
-              :disabled="chatStore.isConversationStreaming(conv.id)"
-              @click.stop="handleDeleteConversation(conv.id)"
-            >
-              <span class="material-icons-round">delete</span>
-            </button>
+            <div class="conv-menu-anchor">
+              <el-dropdown
+                trigger="click"
+                placement="bottom-end"
+                popper-class="conv-actions-menu"
+                @command="handleConversationMenuCommandById(conv.id, $event)"
+              >
+                <button
+                  class="conv-menu-trigger"
+                  type="button"
+                  title="会话操作"
+                  aria-label="会话操作"
+                  :disabled="chatStore.isConversationStreaming(conv.id)"
+                  @click.stop
+                >
+                  <span class="conv-menu-dot" aria-hidden="true"></span>
+                  <span class="conv-menu-dot" aria-hidden="true"></span>
+                  <span class="conv-menu-dot" aria-hidden="true"></span>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="pin">
+                      {{ isConversationPinned(conv.id) ? '取消置顶' : '置顶' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                    <el-dropdown-item command="delete" class="danger" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </div>
 
           <div v-if="chatStore.conversations.length === 0" class="empty-tip">还没有任务，先创建一个吧。</div>
@@ -220,7 +240,7 @@
                 >
                   <button class="reasoning-toggle" @click="toggleReasoning(message.id)">
                     <span>思考过程</span>
-                    <span class="reasoning-state">{{ isStreamingMessage(message.id) ? '思考中...' : '已折叠' }}</span>
+                    <span class="reasoning-state">{{ isStreamingMessage(message.id) ? '正在思考中...' : '已折叠' }}</span>
                     <span class="material-icons-round">{{ getReasoningEntry(message.id)?.collapsed ? 'expand_more' : 'expand_less' }}</span>
                   </button>
                   <div v-show="!getReasoningEntry(message.id)?.collapsed" class="reasoning-content">
@@ -328,11 +348,11 @@
                 :key="model"
                 class="model-option"
                 type="button"
-                :class="{ active: model === activeModelLabel }"
+                :class="{ active: model === activeModelId }"
                 @click="handleSelectModel(model)"
               >
-                <span>{{ model }}</span>
-                <span v-if="model === activeModelLabel" class="material-icons-round">check</span>
+                <span>{{ formatModelLabel(model) }}</span>
+                <span v-if="model === activeModelId" class="material-icons-round">check</span>
               </button>
             </div>
           </div>
@@ -425,9 +445,12 @@ interface GenerateImageResponse {
   imageUrl: string
 }
 
+type ConversationMenuCommand = 'pin' | 'rename' | 'delete'
+
 const MAX_INLINE_FILE_SIZE = 1_500_000
 const MAX_INLINE_TEXT_CHARS = 80_000
 const MAX_TOTAL_INLINE_CHARS = 140_000
+const PINNED_CONVERSATION_STORAGE_KEY = 'petool.pinned-conversation-ids'
 
 const TEXT_FILE_EXTENSIONS = new Set([
   'txt', 'md', 'markdown', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini', 'csv', 'tsv',
@@ -472,8 +495,16 @@ const {
   usePetWindowBehavior(workspaceRef)
 const userAvatarUrl =
   'https://lh3.googleusercontent.com/aida-public/AB6AXuBYaZM97JogdW-ya3ULqGOtiyNOHmX7QgQJQ1c7qMdDxTpN__9ZBn0Jq6D5AQiHwClbXSmKaP3yFa-GzJuTHIsZ6OObIjCQ9QHApIpAuKMYIWptOHH6KVzLGp4nU5DO48mIg48o3YedtwFShv6G0Tq-ir30SVT7WgAWCksaPf_PnwnEwCx7rOimt23ZlQC3VUyfRbucQrEvpTkLIEwEwiWZ_gSWFyekl4IxXUqKEUqrS2CVHHlvuJqUmCJBLBYKUuDKiuQqkueqB3Y'
-const pinnedModelLabel = ref<string | null>(null)
-const modelOptionsBase = ['GLM-5', 'GLM-4-Pro', 'Petool-Fast', 'GPT-4o Local']
+const modelOptionsBase = [
+  'glm-5',
+  'doubao-seed-1-6-thinking-250715',
+  'MiniMax-M2.5'
+]
+const MODEL_LABELS: Record<string, string> = {
+  'glm-5': 'GLM-5',
+  'doubao-seed-1-6-thinking-250715': '豆包 Doubao Seed 1.6 Thinking',
+  'minimax-m2.5': 'MiniMax M2.5'
+}
 const TOOL_STEP_LABELS: Record<string, string> = {
   workspace_run_command: '执行命令',
   workspace_list_directory: '浏览目录',
@@ -488,6 +519,32 @@ const TOOL_STEP_LABELS: Record<string, string> = {
   skills_discover: '发现技能',
   skills_plan: '规划步骤',
   skills_execute: '执行技能'
+}
+
+function loadPinnedConversationIds() {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(PINNED_CONVERSATION_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is string => typeof item === 'string')
+  } catch {
+    return []
+  }
+}
+
+function dedupeConversationIds(ids: string[]) {
+  return ids.filter((id, index) => id && ids.indexOf(id) === index)
+}
+
+const pinnedConversationIds = ref<string[]>(dedupeConversationIds(loadPinnedConversationIds()))
+
+function persistPinnedConversationIds(ids: string[]) {
+  const normalized = dedupeConversationIds(ids)
+  pinnedConversationIds.value = normalized
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(PINNED_CONVERSATION_STORAGE_KEY, JSON.stringify(normalized))
 }
 
 const activeAssistantMessageId = computed<string | null>({
@@ -542,22 +599,31 @@ const isCurrentConversationStreaming = computed(() =>
   chatStore.isConversationStreaming(chatStore.currentConversationId)
 )
 
-const conversationModelLabel = computed(() => {
-  const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
-  return formatModelLabel(source)
+const conversationsForDisplay = computed(() => {
+  const pinnedSet = new Set(pinnedConversationIds.value)
+  const pinned = chatStore.conversations.filter((conversation) => pinnedSet.has(conversation.id))
+  const unpinned = chatStore.conversations.filter((conversation) => !pinnedSet.has(conversation.id))
+  return [...pinned, ...unpinned]
 })
 
+const conversationModelId = computed(() => {
+  const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
+  return normalizeModelId(source)
+})
+
+const activeModelId = computed(() => conversationModelId.value)
+
 const activeModelLabel = computed(() => {
-  return pinnedModelLabel.value || conversationModelLabel.value
+  return formatModelLabel(activeModelId.value)
 })
 
 const modelOptions = computed(() => {
   const seen = new Set<string>()
-  const candidates = [activeModelLabel.value, conversationModelLabel.value, ...modelOptionsBase]
+  const candidates = [activeModelId.value, conversationModelId.value, ...modelOptionsBase]
   const options: string[] = []
 
   for (const model of candidates) {
-    const normalized = model.trim()
+    const normalized = normalizeModelId(model)
     if (!normalized || seen.has(normalized)) continue
     seen.add(normalized)
     options.push(normalized)
@@ -601,6 +667,18 @@ function scheduleScrollMessageListToBottom(force = false) {
     shouldStickToMessageBottom.value = true
   })
 }
+
+watch(
+  () => chatStore.conversations.map((conversation) => conversation.id),
+  (conversationIds) => {
+    const validIds = new Set(conversationIds)
+    const nextPinnedIds = pinnedConversationIds.value.filter((id) => validIds.has(id))
+    if (nextPinnedIds.length !== pinnedConversationIds.value.length) {
+      persistPinnedConversationIds(nextPinnedIds)
+    }
+  },
+  { immediate: true }
+)
 
 watch(
   () => chatStore.currentConversationId,
@@ -960,18 +1038,31 @@ function formatTime(isoString: string) {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatModelLabel(value: string) {
+function normalizeModelId(value: string) {
   const trimmed = value.trim()
   if (!trimmed) return modelOptionsBase[0]
-  if (/^glm-5$/i.test(trimmed)) return 'GLM-5'
-  if (/^glm-4-pro$/i.test(trimmed)) return 'GLM-4-Pro'
-  if (/^petool-fast$/i.test(trimmed)) return 'Petool-Fast'
-  if (/^gpt-4o(\s*local)?$/i.test(trimmed)) return 'GPT-4o Local'
+  if (/^glm-5$/i.test(trimmed)) return 'glm-5'
+  if (/^doubao-seed-1-6-thinking-250715$/i.test(trimmed)) return 'doubao-seed-1-6-thinking-250715'
+  if (/^minimax-m2\.5$/i.test(trimmed)) return 'MiniMax-M2.5'
   return trimmed
 }
 
-function handleSelectModel(model: string) {
-  pinnedModelLabel.value = model
+function formatModelLabel(value: string) {
+  const normalized = normalizeModelId(value)
+  return MODEL_LABELS[normalized.toLowerCase()] || normalized
+}
+
+async function handleSelectModel(model: string) {
+  const conversationId = chatStore.currentConversationId
+  if (!conversationId) return
+  const normalizedModel = normalizeModelId(model)
+  if (!normalizedModel || normalizedModel === normalizeModelId(chatStore.currentConversation?.model || '')) return
+
+  try {
+    await chatStore.updateConversationModel(conversationId, normalizedModel)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, '切换模型失败'))
+  }
 }
 
 function getConversationIcon(index: number) {
@@ -1078,6 +1169,57 @@ async function handleSelectConversation(id: string) {
   createDialogVisible.value = false
 }
 
+function isConversationPinned(id: string) {
+  return pinnedConversationIds.value.includes(id)
+}
+
+function togglePinnedConversation(id: string) {
+  if (isConversationPinned(id)) {
+    persistPinnedConversationIds(pinnedConversationIds.value.filter((item) => item !== id))
+    return
+  }
+  persistPinnedConversationIds([...pinnedConversationIds.value, id])
+}
+
+async function handleRenameConversation(id: string) {
+  const targetConversation = chatStore.conversations.find((item) => item.id === id)
+  if (!targetConversation) return
+
+  try {
+    const promptResult = await ElMessageBox.prompt('请输入新的会话名称', '重命名', {
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValue: targetConversation.title,
+      inputValidator: (inputValue) => (inputValue.trim().length > 0 ? true : '名称不能为空')
+    })
+    const nextTitle = String((promptResult as { value?: string }).value || '').trim()
+    if (!nextTitle || nextTitle === targetConversation.title) return
+    await chatStore.renameConversation(id, nextTitle)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(getErrorMessage(error, '重命名会话失败'))
+  }
+}
+
+async function handleConversationMenuCommand(command: ConversationMenuCommand, id: string) {
+  if (command === 'pin') {
+    togglePinnedConversation(id)
+    return
+  }
+  if (command === 'rename') {
+    await handleRenameConversation(id)
+    return
+  }
+  if (command === 'delete') {
+    await handleDeleteConversation(id)
+  }
+}
+
+async function handleConversationMenuCommandById(id: string, command: string | number | object) {
+  const normalized = String(command) as ConversationMenuCommand
+  await handleConversationMenuCommand(normalized, id)
+}
+
 async function handleDeleteConversation(id: string) {
   const targetConversation = chatStore.conversations.find((item) => item.id === id)
   if (!targetConversation) return
@@ -1098,11 +1240,12 @@ async function handleDeleteConversation(id: string) {
 
   const deletingCurrentConversation = chatStore.currentConversationId === id
   const fallbackConversationId = deletingCurrentConversation
-    ? (chatStore.conversations.find((item) => item.id !== id)?.id ?? null)
+    ? (conversationsForDisplay.value.find((item) => item.id !== id)?.id ?? null)
     : chatStore.currentConversationId
 
   try {
     await chatStore.deleteConversation(id)
+    persistPinnedConversationIds(pinnedConversationIds.value.filter((item) => item !== id))
     await persistConversationWorkspaceDirectory(id, null)
     delete activeAssistantMessageIdByConversation.value[id]
 
@@ -1170,19 +1313,13 @@ async function sendMessage() {
   if ((!content && uploads.length === 0) || !chatStore.currentConversationId || isCurrentConversationStreaming.value) return
 
   const conversationId = chatStore.currentConversationId
-  const messageContentForModel = buildMessageForModel(content, uploads)
-  const messageContentForView = buildMessageForDisplay(content, uploads)
   const workspaceDirectory = resolveWorkspaceDirectoryForSend(uploads)
   if (!workspaceDirectory) {
     ElMessage.warning('请先在“新冒险”选择工作区文件夹，或在设置中配置默认工作目录。')
     return
   }
-
-  const outsideUpload = uploads.find((item) => !isPathInside(workspaceDirectory, item.path))
-  if (outsideUpload) {
-    ElMessage.warning(`文件“${outsideUpload.name}”不在当前工作区，请先切换工作区后再发送。`)
-    return
-  }
+  const messageContentForModel = buildMessageForModel(content, uploads, workspaceDirectory)
+  const messageContentForView = buildMessageForDisplay(content, uploads)
 
   inputMessage.value = ''
   pendingUploads.value = []
@@ -1361,19 +1498,23 @@ function buildMessageForDisplay(content: string, uploads: UploadAttachment[]) {
   return `${trimmed || '请分析我上传的文件。'}${filesBlock}`
 }
 
-function buildMessageForModel(content: string, uploads: UploadAttachment[]) {
+function buildMessageForModel(content: string, uploads: UploadAttachment[], workspaceDirectory: string) {
   if (uploads.length === 0) return content.trim()
 
   let remainingInlineBudget = MAX_TOTAL_INLINE_CHARS
   const lines: string[] = []
   lines.push('【用户上传文件】')
+  lines.push(`当前工作区: ${workspaceDirectory}`)
+  lines.push('重要限制: 若需要创建/修改文件，只能在当前工作区内操作。')
 
   for (let i = 0; i < uploads.length; i += 1) {
     const item = uploads[i]
+    const insideWorkspace = isPathInside(workspaceDirectory, item.path)
     lines.push(`${i + 1}. 文件名: ${item.name}`)
     lines.push(`   路径: ${item.path}`)
     lines.push(`   大小: ${formatBytes(item.size)}`)
     lines.push(`   说明: ${item.note}`)
+    lines.push(`   工作区内: ${insideWorkspace ? '是' : '否'}`)
 
     if (item.inlineText && remainingInlineBudget > 0) {
       const textToInclude =
@@ -1389,11 +1530,15 @@ function buildMessageForModel(content: string, uploads: UploadAttachment[]) {
         lines.push('   注: 内容已截断。')
       }
     } else {
-      lines.push('   内容片段: 未内联，请通过文件路径读取。')
+      if (insideWorkspace) {
+        lines.push('   内容片段: 未内联，请通过文件路径读取。')
+      } else {
+        lines.push('   内容片段: 未内联，且该路径在工作区外，无法通过工作区工具读取。')
+      }
     }
   }
 
-  lines.push('请优先基于上述附件内容完成分析；若内容未内联，请通过可用工具读取该路径文件。')
+  lines.push('请优先基于上述附件内容完成分析；若内容未内联，请仅在工作区内使用可用工具读取路径。')
 
   const userText = content.trim() || '请分析这些文件，并给出清晰结论。'
   return `${userText}\n\n${lines.join('\n')}`

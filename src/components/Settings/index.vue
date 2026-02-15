@@ -6,84 +6,85 @@
     :close-on-click-modal="false"
   >
     <el-tabs v-model="activeTab">
-      <!-- API Settings -->
-      <el-tab-pane label="API Configuration" name="api">
-        <el-form :model="localConfig" label-width="120px">
-          <el-form-item label="API Key">
+      <!-- Model Settings -->
+      <el-tab-pane label="Model Configuration" name="api">
+        <el-form :model="localConfig" label-width="140px">
+          <el-alert
+            title="Endpoint Is Built-in"
+            type="info"
+            :closable="false"
+            description="API base URLs are fixed in code. You only need to configure API keys and select models."
+            style="margin-bottom: 14px"
+          />
+
+          <el-divider content-position="left">API Keys</el-divider>
+
+          <el-form-item label="GLM API Key">
             <el-input
               v-model="localConfig.api_key"
               type="password"
-              placeholder="Enter your API key"
+              placeholder="Required for GLM text models"
               show-password
             />
           </el-form-item>
 
-          <el-form-item label="API Base URL">
-            <el-input
-              v-model="localConfig.api_base"
-              placeholder="https://open.bigmodel.cn/api/paas/v4"
-            />
-          </el-form-item>
-
-          <el-form-item label="ClawHub Key">
-            <el-input
-              v-model="localConfig.clawhub_api_key"
-              type="password"
-              placeholder="Optional: sk_live_..."
-              show-password
-            />
-          </el-form-item>
-
-          <el-form-item label="ClawHub API">
-            <el-input
-              v-model="localConfig.clawhub_api_base"
-              placeholder="https://clawhub.ai"
-            />
-          </el-form-item>
-
-          <el-divider content-position="left">Image Generation (Doubao)</el-divider>
-
-          <el-form-item label="ARK API Key">
+          <el-form-item label="Doubao API Key">
             <el-input
               v-model="localConfig.ark_api_key"
               type="password"
-              placeholder="Optional: use different key for image generation"
+              placeholder="Required for Doubao text/image/video models"
               show-password
             />
           </el-form-item>
 
-          <el-form-item label="ARK API Base">
+          <el-form-item label="MiniMax API Key">
             <el-input
-              v-model="localConfig.ark_api_base"
-              placeholder="https://ark.cn-beijing.volces.com/api/v3"
+              v-model="localConfig.minimax_api_key"
+              type="password"
+              placeholder="Required for MiniMax text models"
+              show-password
             />
           </el-form-item>
 
-          <el-form-item label="Image Model">
+          <el-form-item label="ClawHub API Key">
             <el-input
-              v-model="localConfig.image_model"
-              placeholder="doubao-seedream-4-5-251128"
+              v-model="localConfig.clawhub_api_key"
+              type="password"
+              placeholder="Optional (for skills ecosystem)"
+              show-password
             />
           </el-form-item>
 
-          <el-form-item label="Image Size">
-            <el-input
-              v-model="localConfig.image_size"
-              placeholder="2K"
-            />
+          <el-form-item label="Text Model">
+            <el-select v-model="localConfig.model" style="width: 100%" filterable allow-create default-first-option>
+              <el-option label="GLM-5 (Recommended)" value="glm-5" />
+              <el-option label="Doubao Seed 1.6 Thinking (Recommended)" value="doubao-seed-1-6-thinking-250715" />
+              <el-option label="MiniMax M2.5 (Recommended)" value="MiniMax-M2.5" />
+            </el-select>
           </el-form-item>
 
-          <el-form-item label="Image Watermark">
-            <el-switch v-model="localConfig.image_watermark" />
+          <el-form-item label="Image Generation Model">
+            <el-select v-model="localConfig.image_model" style="width: 100%" filterable allow-create default-first-option>
+              <el-option label="Doubao Seedream 4.5 (Recommended)" value="doubao-seedream-4-5-251128" />
+            </el-select>
           </el-form-item>
 
-          <el-form-item label="Model">
-            <el-select v-model="localConfig.model" style="width: 100%">
-              <el-option label="GLM-5" value="glm-5" />
-              <el-option label="GLM-4.7" value="glm-4.7" />
-              <el-option label="GLM-4-Flash" value="glm-4-flash" />
-              <el-option label="GLM-4-Air" value="glm-4-air" />
-              <el-option label="GLM-4" value="glm-4" />
+          <el-form-item label="Image Understanding Model">
+            <el-select
+              v-model="localConfig.image_understand_model"
+              style="width: 100%"
+              filterable
+              allow-create
+              default-first-option
+            >
+              <el-option label="GLM-4.6V (Recommended)" value="glm-4.6v" />
+              <el-option label="Doubao Vision" value="doubao-vision-pro-32k" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="Video Generation Model">
+            <el-select v-model="localConfig.video_model" style="width: 100%" filterable allow-create default-first-option>
+              <el-option label="Doubao Seedance 1.0 Pro (Recommended)" value="doubao-seedance-1-0-pro-250528" />
             </el-select>
           </el-form-item>
 
@@ -109,29 +110,11 @@
               </template>
             </el-input>
           </el-form-item>
-
-          <el-form-item>
-            <el-button
-              type="primary"
-              @click="handleValidate"
-              :loading="validating"
-            >
-              Validate API Key
-            </el-button>
-          </el-form-item>
         </el-form>
       </el-tab-pane>
-
       <!-- Appearance -->
       <el-tab-pane label="Appearance" name="appearance">
         <el-form label-width="120px">
-          <el-form-item label="Theme">
-            <el-radio-group v-model="localConfig.theme">
-              <el-radio value="dark">Dark</el-radio>
-              <el-radio value="light">Light</el-radio>
-            </el-radio-group>
-          </el-form-item>
-
           <el-form-item label="Tool Display">
             <el-radio-group v-model="localConfig.tool_display_mode">
               <el-radio value="compact">Compact (Recommended)</el-radio>
@@ -212,7 +195,7 @@
             title="接管模式说明"
             type="info"
             :closable="false"
-            description="优先填写 CDP URL 来接管你已打开的浏览器（需该浏览器带 --remote-debugging-port 启动）。如果不填 CDP URL，则使用 Executable Path 启动你指定的浏览器。"
+            description="优先填写 CDP URL 来接管已打开的浏览器（需用 --remote-debugging-port 启动）。如果不填 CDP URL，则使用 Executable Path 启动浏览器。"
             style="margin-bottom: 12px"
           />
 
@@ -237,7 +220,7 @@
           <el-form-item label="User Data Dir">
             <el-input
               v-model="activeBrowserProfile.user_data_dir"
-              placeholder="可选，未填则使用 PETool 默认目录"
+              placeholder="可选，不填则使用 PETool 默认目录"
             />
           </el-form-item>
 
@@ -389,7 +372,6 @@ const emit = defineEmits<Emits>()
 
 const configStore = useConfigStore()
 const activeTab = ref('api')
-const validating = ref(false)
 const saving = ref(false)
 const showAddMcpDialog = ref(false)
 
@@ -429,14 +411,17 @@ const defaultConfig: Config = {
   clawhub_api_base: 'https://clawhub.ai',
   ark_api_key: '',
   ark_api_base: 'https://ark.cn-beijing.volces.com/api/v3',
+  minimax_api_key: '',
   image_model: 'doubao-seedream-4-5-251128',
+  image_understand_model: 'glm-4.6v',
+  video_model: 'doubao-seedance-1-0-pro-250528',
   image_size: '2K',
   image_watermark: true,
   model: 'glm-5',
   system_prompt: '',
   work_directory: '',
   conversation_workspaces: {},
-  theme: 'dark',
+  theme: 'light',
   tool_display_mode: 'compact',
   mcp_servers: [],
   tool_permissions: {},
@@ -561,33 +546,10 @@ watch(() => props.modelValue, (val) => {
       mcp_servers: [...(currentConfig.mcp_servers ?? [])],
       browser: deepClone(currentConfig.browser ?? defaultBrowserConfig)
     }
+    localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
   }
 })
-
-async function handleValidate() {
-  if (!localConfig.value.api_key) {
-    ElMessage.warning('Please enter an API key first')
-    return
-  }
-
-  validating.value = true
-  try {
-    const valid = await configStore.validateApiKey(
-      localConfig.value.api_key,
-      localConfig.value.api_base
-    )
-    if (valid) {
-      ElMessage.success('API key is valid')
-    } else {
-      ElMessage.error('Invalid API key')
-    }
-  } catch (error) {
-    ElMessage.error('Failed to validate API key')
-  } finally {
-    validating.value = false
-  }
-}
 
 async function handleSelectFolder() {
   try {
@@ -603,6 +565,7 @@ async function handleSelectFolder() {
 async function handleSave() {
   saving.value = true
   try {
+    localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
     await configStore.saveConfig(localConfig.value)
     ElMessage.success('Settings saved successfully')
@@ -740,3 +703,4 @@ async function resetBrowserProfile() {
   line-height: 1.4;
 }
 </style>
+

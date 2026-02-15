@@ -33,6 +33,14 @@ fn default_image_model() -> String {
     "doubao-seedream-4-5-251128".to_string()
 }
 
+fn default_image_understand_model() -> String {
+    "glm-4.6v".to_string()
+}
+
+fn default_video_model() -> String {
+    "doubao-seedance-1-0-pro-250528".to_string()
+}
+
 fn default_image_size() -> String {
     "2K".to_string()
 }
@@ -69,8 +77,14 @@ pub struct Config {
     pub ark_api_key: Option<String>,
     #[serde(default = "default_ark_api_base_option")]
     pub ark_api_base: Option<String>,
+    #[serde(default)]
+    pub minimax_api_key: Option<String>,
     #[serde(default = "default_image_model")]
     pub image_model: String,
+    #[serde(default = "default_image_understand_model")]
+    pub image_understand_model: String,
+    #[serde(default = "default_video_model")]
+    pub video_model: String,
     #[serde(default = "default_image_size")]
     pub image_size: String,
     #[serde(default = "default_image_watermark")]
@@ -234,14 +248,17 @@ impl Default for Config {
             clawhub_api_base: Some(default_clawhub_api_base()),
             ark_api_key: None,
             ark_api_base: Some(default_ark_api_base()),
+            minimax_api_key: None,
             image_model: default_image_model(),
+            image_understand_model: default_image_understand_model(),
+            video_model: default_video_model(),
             image_size: default_image_size(),
             image_watermark: default_image_watermark(),
             model: "glm-5".to_string(),
             system_prompt: None,
             work_directory: None,
             conversation_workspaces: HashMap::new(),
-            theme: "dark".to_string(),
+            theme: "light".to_string(),
             tool_display_mode: default_tool_display_mode(),
             mcp_servers: Vec::new(),
             tool_permissions: HashMap::new(),
