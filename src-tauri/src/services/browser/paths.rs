@@ -100,13 +100,41 @@ fn candidate_sidecar_entries() -> Vec<PathBuf> {
     if let Ok(cwd) = env::current_dir() {
         let src_entry = cwd.join("browser-sidecar").join("src").join("index.mjs");
         let dist_entry = cwd.join("browser-sidecar").join("dist").join("index.mjs");
+        let cwd_resource_entry = cwd
+            .join("resources")
+            .join("browser-sidecar")
+            .join("dist")
+            .join("index.mjs");
+        let parent_src_entry = cwd
+            .join("..")
+            .join("browser-sidecar")
+            .join("src")
+            .join("index.mjs");
+        let parent_dist_entry = cwd
+            .join("..")
+            .join("browser-sidecar")
+            .join("dist")
+            .join("index.mjs");
+        let parent_resource_entry = cwd
+            .join("..")
+            .join("src-tauri")
+            .join("resources")
+            .join("browser-sidecar")
+            .join("dist")
+            .join("index.mjs");
         if prefer_src_sidecar_in_dev() {
             candidates.push(src_entry);
             candidates.push(dist_entry);
+            candidates.push(parent_src_entry);
+            candidates.push(parent_dist_entry);
         } else {
             candidates.push(dist_entry);
             candidates.push(src_entry);
+            candidates.push(parent_dist_entry);
+            candidates.push(parent_src_entry);
         }
+        candidates.push(cwd_resource_entry);
+        candidates.push(parent_resource_entry);
     }
 
     if let Ok(exe) = env::current_exe() {
