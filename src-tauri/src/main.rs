@@ -82,6 +82,7 @@ async fn main() {
             chat::resolve_tool_approval,
             chat::get_conversations,
             chat::get_messages,
+            chat::get_conversation_timeline,
             chat::create_conversation,
             chat::delete_conversation,
             chat::rename_conversation,

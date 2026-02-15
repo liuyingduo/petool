@@ -851,9 +851,15 @@ label {
 
 .tool-compact-item {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.tool-compact-main {
+  display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
 }
 
 .tool-compact-dot {
@@ -882,6 +888,14 @@ label {
   color: #9ca3af;
   font-size: 11px;
   font-weight: 700;
+}
+
+.tool-compact-detail {
+  color: #78716c;
+  font-size: 11px;
+  line-height: 1.45;
+  margin-left: 16px;
+  word-break: break-word;
 }
 
 .tool-approval-card {

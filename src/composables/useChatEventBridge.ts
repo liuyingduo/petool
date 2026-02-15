@@ -1,19 +1,4 @@
 import { listen } from '@tauri-apps/api/event'
-import type { Ref } from 'vue'
-
-export interface ReasoningEntry {
-  text: string
-  collapsed: boolean
-}
-
-export interface ToolStreamItem {
-  id: string
-  name: string
-  arguments: string
-  result: string
-  status: 'running' | 'done' | 'error'
-  index?: number
-}
 
 export interface ToolApprovalRequest {
   requestId: string
@@ -23,264 +8,180 @@ export interface ToolApprovalRequest {
   arguments: string
 }
 
+export type TimelineEventType =
+  | 'user_message'
+  | 'assistant_reasoning'
+  | 'assistant_text'
+  | 'assistant_tool_call'
+  | 'assistant_tool_result'
+
+export interface TimelineEventInput {
+  conversation_id: string
+  turn_id: string
+  seq: number
+  event_type: TimelineEventType
+  tool_call_id?: string | null
+  payload: Record<string, unknown>
+  created_at?: string
+}
+
 interface ChatStoreBridge {
   currentConversationId: string | null
-  streaming: boolean
-  updateLastMessage: (conversationId: string, chunk: string) => void
   setConversationStreaming: (conversationId: string, isStreaming: boolean) => void
+  appendTimelineEvent: (event: TimelineEventInput) => void
 }
 
 interface ChatEventBridgeOptions {
   chatStore: ChatStoreBridge
-  activeAssistantMessageId: Ref<string | null>
-  reasoningByMessage: Ref<Record<string, ReasoningEntry>>
-  toolStreamItems: Ref<ToolStreamItem[]>
   onToolApprovalRequest?: (request: ToolApprovalRequest) => void
   onStreamEnd: (conversationId: string | null) => void
 }
 
+function asObjectPayload(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null
+  return value as Record<string, unknown>
+}
+
+function readString(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function readNumber(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  return 0
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function buildTimelineEvent(
+  payload: Record<string, unknown>,
+  fallbackConversationId: string | null,
+  fallbackEventType: TimelineEventType,
+  fallbackData: Record<string, unknown>
+): TimelineEventInput | null {
+  const conversationId = readString(payload, 'conversationId') || fallbackConversationId || ''
+  if (!conversationId) return null
+  const turnId = readString(payload, 'turnId') || 'legacy-stream-turn'
+  const seq = readNumber(payload, 'seq')
+  const eventType = (readString(payload, 'eventType') as TimelineEventType) || fallbackEventType
+  const createdAt = readString(payload, 'createdAt') || new Date().toISOString()
+  const toolCallId = readOptionalString(payload, 'toolCallId')
+  return {
+    conversation_id: conversationId,
+    turn_id: turnId,
+    seq,
+    event_type: eventType,
+    tool_call_id: toolCallId,
+    payload: fallbackData,
+    created_at: createdAt
+  }
+}
+
 export async function registerChatEventListeners(options: ChatEventBridgeOptions) {
   const unlistenFns: Array<() => void> = []
-  let anonymousToolCounter = 0
 
-  function mergeToolArguments(base: string, chunk: string) {
-    if (!base) return chunk
-    if (!chunk) return base
-
-    // Some providers emit full snapshots, others emit incremental chunks.
-    // For tool JSON, use conservative dedupe and avoid overlap trimming.
-    if (chunk === base) return base
-    if (chunk.startsWith(base) || chunk.includes(base)) return chunk
-    if (base.includes(chunk) || base.endsWith(chunk)) return base
-    return base + chunk
-  }
-
-  function provisionalToolId(index?: number) {
-    anonymousToolCounter += 1
-    if (typeof index === 'number' && Number.isFinite(index)) {
-      return `tool-${index}-${anonymousToolCounter}`
-    }
-    return `tool-anon-${anonymousToolCounter}`
-  }
-
-  function findToolItem(
-    id?: string,
-    index?: number,
-    name?: string,
-    preferRunning = false
-  ) {
-    const items = options.toolStreamItems.value
-    if (id) {
-      const byId = items.find((entry) => entry.id === id)
-      if (byId) return byId
-    }
-
-    if (typeof index === 'number' && Number.isFinite(index)) {
-      const byIndex = items.find(
-        (entry) => entry.index === index && (!preferRunning || entry.status === 'running')
-      )
-      if (byIndex) return byIndex
-    }
-
-    if (name) {
-      const byName = items.find((entry) => entry.name === name && (!preferRunning || entry.status === 'running'))
-      if (byName) return byName
-    }
-
-    if (preferRunning) {
-      return items.find((entry) => entry.status === 'running')
-    }
-
-    return undefined
-  }
-
-  function mergeToolItem(target: ToolStreamItem, source: ToolStreamItem) {
-    if (!target.arguments && source.arguments) {
-      target.arguments = source.arguments
-    }
-    if (!target.result && source.result) {
-      target.result = source.result
-    }
-    if (target.status === 'running' && source.status !== 'running') {
-      target.status = source.status
-    }
-    if (typeof target.index !== 'number' && typeof source.index === 'number') {
-      target.index = source.index
-    }
-  }
-
-  function normalizeToolOrder() {
-    options.toolStreamItems.value.sort((a, b) => {
-      const left = typeof a.index === 'number' ? a.index : Number.MAX_SAFE_INTEGER
-      const right = typeof b.index === 'number' ? b.index : Number.MAX_SAFE_INTEGER
-      return left - right
+  unlistenFns.push(
+    await listen('chat-user-message', (event) => {
+      const payload = asObjectPayload(event.payload)
+      if (!payload) return
+      const timelineEvent = buildTimelineEvent(payload, options.chatStore.currentConversationId, 'user_message', {
+        content: readString(payload, 'content')
+      })
+      if (!timelineEvent) return
+      options.chatStore.appendTimelineEvent(timelineEvent)
     })
-  }
+  )
 
   unlistenFns.push(
     await listen('chat-chunk', (event) => {
-      let chunk = ''
-      let conversationId: string | null = options.chatStore.currentConversationId
-      if (typeof event.payload === 'string') {
-        chunk = event.payload
-      } else if (event.payload && typeof event.payload === 'object') {
-        const payload = event.payload as { conversationId?: string; chunk?: string }
-        chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
-        conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
-      }
+      const payload = asObjectPayload(event.payload)
+      if (!payload) return
+      const timelineEvent = buildTimelineEvent(payload, options.chatStore.currentConversationId, 'assistant_text', {
+        text: readString(payload, 'chunk')
+      })
+      if (!timelineEvent) return
+      options.chatStore.appendTimelineEvent(timelineEvent)
+    })
+  )
 
-      if (!conversationId || !chunk) return
-      options.chatStore.updateLastMessage(conversationId, chunk)
+  unlistenFns.push(
+    await listen('chat-reasoning', (event) => {
+      const payload = asObjectPayload(event.payload)
+      if (!payload) return
+      const timelineEvent = buildTimelineEvent(payload, options.chatStore.currentConversationId, 'assistant_reasoning', {
+        text: readString(payload, 'chunk')
+      })
+      if (!timelineEvent) return
+      options.chatStore.appendTimelineEvent(timelineEvent)
+    })
+  )
+
+  unlistenFns.push(
+    await listen('chat-tool-call', (event) => {
+      const payload = asObjectPayload(event.payload)
+      if (!payload) return
+      const timelineEvent = buildTimelineEvent(payload, options.chatStore.currentConversationId, 'assistant_tool_call', {
+        index: payload.index,
+        name: payload.name,
+        argumentsChunk: payload.argumentsChunk
+      })
+      if (!timelineEvent) return
+      options.chatStore.appendTimelineEvent(timelineEvent)
+    })
+  )
+
+  unlistenFns.push(
+    await listen('chat-tool-result', (event) => {
+      const payload = asObjectPayload(event.payload)
+      if (!payload) return
+      const timelineEvent = buildTimelineEvent(payload, options.chatStore.currentConversationId, 'assistant_tool_result', {
+        name: payload.name,
+        result: payload.result,
+        error: payload.error
+      })
+      if (!timelineEvent) return
+      options.chatStore.appendTimelineEvent(timelineEvent)
     })
   )
 
   unlistenFns.push(
     await listen('chat-end', (event) => {
       let conversationId: string | null = options.chatStore.currentConversationId
-      if (event.payload && typeof event.payload === 'object') {
-        const payload = event.payload as { conversationId?: string }
-        if (typeof payload.conversationId === 'string') {
-          conversationId = payload.conversationId
-        }
+      const payload = asObjectPayload(event.payload)
+      if (payload) {
+        const value = readString(payload, 'conversationId')
+        if (value) conversationId = value
       }
 
       if (conversationId) {
         options.chatStore.setConversationStreaming(conversationId, false)
       }
       options.onStreamEnd(conversationId)
-      if (conversationId && conversationId === options.chatStore.currentConversationId) {
-        options.activeAssistantMessageId.value = null
-      }
-    })
-  )
-
-  unlistenFns.push(
-    await listen('chat-reasoning', (event) => {
-      let chunk = ''
-      let conversationId: string | null = options.chatStore.currentConversationId
-      if (typeof event.payload === 'string') {
-        chunk = event.payload
-      } else if (event.payload && typeof event.payload === 'object') {
-        const payload = event.payload as { conversationId?: string; chunk?: string }
-        chunk = typeof payload.chunk === 'string' ? payload.chunk : ''
-        conversationId = typeof payload.conversationId === 'string' ? payload.conversationId : conversationId
-      }
-
-      if (conversationId !== options.chatStore.currentConversationId) return
-      if (!chunk || !options.activeAssistantMessageId.value) return
-
-      const id = options.activeAssistantMessageId.value
-      if (!options.reasoningByMessage.value[id]) {
-        options.reasoningByMessage.value[id] = { text: '', collapsed: false }
-      }
-      options.reasoningByMessage.value[id].text += chunk
-      options.reasoningByMessage.value[id].collapsed = false
-    })
-  )
-
-  unlistenFns.push(
-    await listen('chat-tool-call', (event) => {
-      const payload = event.payload as {
-        conversationId?: string
-        index?: number
-        toolCallId?: string
-        name?: string
-        argumentsChunk?: string
-      }
-      if (
-        payload.conversationId &&
-        payload.conversationId !== options.chatStore.currentConversationId
-      ) {
-        return
-      }
-      const id = payload.toolCallId || provisionalToolId(payload.index)
-      let item = payload.toolCallId
-        ? findToolItem(payload.toolCallId, payload.index, payload.name)
-        : findToolItem(undefined, payload.index, payload.name, true)
-
-      if (!item) {
-        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running', index: payload.index }
-        options.toolStreamItems.value.push(item)
-      } else if (!payload.toolCallId && item.status !== 'running') {
-        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running', index: payload.index }
-        options.toolStreamItems.value.push(item)
-      } else if (payload.toolCallId && item.id !== payload.toolCallId) {
-        const duplicate = options.toolStreamItems.value.find((entry) => entry.id === payload.toolCallId)
-        if (duplicate && duplicate !== item) {
-          mergeToolItem(duplicate, item)
-          const removeIndex = options.toolStreamItems.value.indexOf(item)
-          if (removeIndex >= 0) {
-            options.toolStreamItems.value.splice(removeIndex, 1)
-          }
-          item = duplicate
-        } else {
-          item.id = payload.toolCallId
-        }
-      }
-
-      if (payload.name) item.name = payload.name
-      if (typeof payload.index === 'number' && Number.isFinite(payload.index)) {
-        item.index = payload.index
-      }
-      if (payload.argumentsChunk) item.arguments = mergeToolArguments(item.arguments, payload.argumentsChunk)
-      normalizeToolOrder()
-    })
-  )
-
-  unlistenFns.push(
-    await listen('chat-tool-result', (event) => {
-      const payload = event.payload as {
-        conversationId?: string
-        toolCallId?: string
-        name?: string
-        result?: string | null
-        error?: string | null
-      }
-      if (
-        payload.conversationId &&
-        payload.conversationId !== options.chatStore.currentConversationId
-      ) {
-        return
-      }
-      const id = payload.toolCallId || provisionalToolId(undefined)
-      let item = findToolItem(payload.toolCallId, undefined, payload.name, true)
-
-      if (!item) {
-        item = { id, name: payload.name || 'tool', arguments: '', result: '', status: 'running' }
-        options.toolStreamItems.value.push(item)
-      } else if (payload.toolCallId && item.id !== payload.toolCallId) {
-        const duplicate = options.toolStreamItems.value.find((entry) => entry.id === payload.toolCallId)
-        if (duplicate && duplicate !== item) {
-          mergeToolItem(duplicate, item)
-          const removeIndex = options.toolStreamItems.value.indexOf(item)
-          if (removeIndex >= 0) {
-            options.toolStreamItems.value.splice(removeIndex, 1)
-          }
-          item = duplicate
-        } else {
-          item.id = payload.toolCallId
-        }
-      }
-
-      if (payload.name) item.name = payload.name
-      item.status = payload.error ? 'error' : 'done'
-      item.result = payload.error || payload.result || ''
-      normalizeToolOrder()
     })
   )
 
   unlistenFns.push(
     await listen('chat-tool-approval-request', (event) => {
-      const payload = event.payload as Partial<ToolApprovalRequest>
-      if (!options.onToolApprovalRequest) return
-      if (!payload.requestId || !payload.conversationId || !payload.toolCallId || !payload.toolName) return
+      const payload = asObjectPayload(event.payload)
+      if (!payload || !options.onToolApprovalRequest) return
+
+      const requestId = readString(payload, 'requestId')
+      const conversationId = readString(payload, 'conversationId')
+      const toolCallId = readString(payload, 'toolCallId')
+      const toolName = readString(payload, 'toolName')
+      if (!requestId || !conversationId || !toolCallId || !toolName) return
 
       options.onToolApprovalRequest({
-        requestId: payload.requestId,
-        conversationId: payload.conversationId,
-        toolCallId: payload.toolCallId,
-        toolName: payload.toolName,
-        arguments: payload.arguments || ''
+        requestId,
+        conversationId,
+        toolCallId,
+        toolName,
+        arguments: readString(payload, 'arguments')
       })
     })
   )

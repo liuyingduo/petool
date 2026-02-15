@@ -169,96 +169,119 @@
             @click="handleMarkdownLinkClick"
             @scroll.passive="handleMessageListScroll"
           >
-            <div
-              v-for="message in chatStore.currentMessages"
-              :key="message.id"
-              v-show="isRenderableMessage(message)"
-              class="message-row"
-              :class="message.role === 'user' ? 'user' : 'assistant'"
-            >
-              <div v-if="message.role === 'assistant'" class="message-meta">
+            <div v-if="chatStore.currentTimelineLegacy" class="empty-tip">Legacy 会话：按近似顺序回放</div>
+            <template v-for="turn in timelineTurnsForDisplay" :key="turn.turnId">
+              <div v-if="turn.userText" class="message-row user">
+                <div class="message-meta user-meta">
+                  <span class="time">{{ formatTime(turn.userCreatedAt) }}</span>
+                  <div class="message-avatar">
+                    <img class="avatar-img" :src="userAvatarUrl" alt="User Avatar" />
+                  </div>
+                </div>
+                <div class="bubble">
+                  <div v-html="renderMarkdown(turn.userText)"></div>
+                </div>
+                <div class="read-status">已读</div>
+              </div>
+
+              <div v-if="turn.assistantEvents.length > 0" class="message-row assistant">
+                <div class="message-meta">
+                  <span class="name">Petool</span>
+                  <span class="time">{{ formatTime(turn.assistantCreatedAt) }}</span>
+                </div>
+                <div class="bubble">
+                  <div
+                    v-for="event in turn.assistantEvents"
+                    :key="event.id"
+                    class="timeline-event"
+                  >
+                    <template v-if="event.event_type === 'assistant_reasoning'">
+                      <div class="reasoning">
+                        <button class="reasoning-toggle" @click="toggleTimelineReasoning(event.id)">
+                          <span>思考过程</span>
+                          <span class="reasoning-state">{{ isTimelineReasoningCollapsed(event.id) ? '已折叠' : '展开中' }}</span>
+                          <span class="material-icons-round">
+                            {{ isTimelineReasoningCollapsed(event.id) ? 'expand_more' : 'expand_less' }}
+                          </span>
+                        </button>
+                        <div v-show="!isTimelineReasoningCollapsed(event.id)" class="reasoning-content">
+                          {{ getTimelineReasoningText(event) }}
+                        </div>
+                      </div>
+                    </template>
+
+                    <template v-else-if="event.event_type === 'assistant_tool_call'">
+                      <div v-if="isToolDisplayFull" class="tool-progress">
+                        <div class="tool-list">
+                          <div class="tool-item running">
+                            <div class="tool-title">{{ getTimelineToolName(event) }}</div>
+                            <div v-if="getTimelineToolArguments(event)" class="tool-text">
+                              <span class="tool-text-label">参数</span>
+                              <pre class="tool-code">{{ getTimelineToolArguments(event) }}</pre>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="tool-compact">
+                        <div class="tool-compact-list">
+                          <div class="tool-compact-item running">
+                            <div class="tool-compact-main">
+                              <span class="tool-compact-dot" aria-hidden="true"></span>
+                              <span class="tool-compact-name">{{ getTimelineToolName(event) }}</span>
+                              <span class="tool-compact-status">{{ getTimelineToolCompactStatus(event) }}</span>
+                            </div>
+                            <div v-if="getTimelineToolCompactDetail(event, turn.assistantEvents)" class="tool-compact-detail">
+                              {{ getTimelineToolCompactDetail(event, turn.assistantEvents) }}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <template v-else-if="event.event_type === 'assistant_tool_result'">
+                      <div v-if="isToolDisplayFull" class="tool-progress">
+                        <div class="tool-list">
+                          <div class="tool-item" :class="getTimelineToolResultStatus(event)">
+                            <div class="tool-title">{{ getTimelineToolName(event) }}</div>
+                            <div v-if="getTimelineToolResult(event)" class="tool-text">
+                              <span class="tool-text-label">结果</span>
+                              <pre class="tool-code">{{ getTimelineToolResult(event) }}</pre>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="tool-compact">
+                        <div class="tool-compact-list">
+                          <div class="tool-compact-item" :class="getTimelineToolResultStatus(event)">
+                            <div class="tool-compact-main">
+                              <span class="tool-compact-dot" aria-hidden="true"></span>
+                              <span class="tool-compact-name">{{ getTimelineToolName(event) }}</span>
+                              <span class="tool-compact-status">{{ getTimelineToolCompactStatus(event) }}</span>
+                            </div>
+                            <div v-if="getTimelineToolCompactDetail(event, turn.assistantEvents)" class="tool-compact-detail">
+                              {{ getTimelineToolCompactDetail(event, turn.assistantEvents) }}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <template v-else-if="event.event_type === 'assistant_text'">
+                      <div v-html="renderMarkdown(getTimelineText(event))"></div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <div v-if="shouldShowStandaloneTypingBubble" class="message-row assistant">
+              <div class="message-meta">
                 <span class="name">Petool</span>
-                <span class="time">{{ formatTime(message.created_at) }}</span>
+                <span class="time">{{ formatTime(new Date().toISOString()) }}</span>
               </div>
-              <div v-else class="message-meta user-meta">
-                <span class="time">{{ formatTime(message.created_at) }}</span>
-                <div class="message-avatar">
-                  <img class="avatar-img" :src="userAvatarUrl" alt="User Avatar" />
-                </div>
+              <div class="bubble">
+                <div class="typing"><span></span><span></span><span></span></div>
               </div>
-
-              <div v-if="shouldShowMessageBubble(message)" class="bubble">
-                <div
-                  v-if="shouldShowToolProgress(message)"
-                  class="tool-progress"
-                >
-                  <div v-if="isToolDisplayFull" class="tool-list">
-                    <div
-                      v-for="item in getToolItemsForMessage(message.id)"
-                      :key="`${message.id}-${item.id}`"
-                      class="tool-item"
-                      :class="item.status"
-                    >
-                      <div class="tool-title">{{ renderToolItemName(item) }}</div>
-                      <div v-if="item.arguments" class="tool-text">
-                        <span class="tool-text-label">参数</span>
-                        <pre class="tool-code">{{ renderToolArguments(item) }}</pre>
-                      </div>
-                      <div v-if="item.result" class="tool-text">
-                        <span class="tool-text-label">结果</span>
-                        <pre class="tool-code">{{ renderToolResult(item) }}</pre>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div v-else class="tool-compact">
-                    <button class="tool-compact-head" type="button" @click="toggleCompactToolList(message.id)">
-                      <span class="tool-compact-title">{{ getCompactToolSummaryTitle(message.id) }}</span>
-                      <span class="tool-compact-count">{{ getCompactToolSummaryCount(message.id) }}</span>
-                      <span class="material-icons-round">
-                        {{ isToolListCollapsed(message.id) ? 'expand_more' : 'expand_less' }}
-                      </span>
-                    </button>
-                    <div v-show="!isToolListCollapsed(message.id)" class="tool-compact-list">
-                      <div
-                        v-for="item in getToolItemsForMessage(message.id)"
-                        :key="`compact-${message.id}-${item.id}`"
-                        class="tool-compact-item"
-                        :class="item.status"
-                      >
-                        <span class="tool-compact-dot" aria-hidden="true"></span>
-                        <span class="tool-compact-name">{{ renderToolItemName(item) }}</span>
-                        <span class="tool-compact-status">{{ getToolStatusLabel(item.status) }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  v-if="message.role === 'assistant' && getReasoningEntry(message.id)?.text"
-                  class="reasoning"
-                >
-                  <button class="reasoning-toggle" @click="toggleReasoning(message.id)">
-                    <span>思考过程</span>
-                    <span class="reasoning-state">{{ isStreamingMessage(message.id) ? '正在思考中...' : '已折叠' }}</span>
-                    <span class="material-icons-round">{{ getReasoningEntry(message.id)?.collapsed ? 'expand_more' : 'expand_less' }}</span>
-                  </button>
-                  <div v-show="!getReasoningEntry(message.id)?.collapsed" class="reasoning-content">
-                    {{ getReasoningEntry(message.id)?.text }}
-                  </div>
-                </div>
-
-                <div
-                  v-if="shouldRenderAssistantContent(message)"
-                  v-html="renderMarkdown(getDisplayedMessageContent(message))"
-                ></div>
-
-                <div v-if="message.role === 'assistant' && isStreamingMessage(message.id)" class="typing">
-                  <span></span><span></span><span></span>
-                </div>
-              </div>
-
-              <div v-if="message.role === 'user'" class="read-status">已读</div>
             </div>
           </div>
         </div>
@@ -408,7 +431,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openExternal } from '@tauri-apps/plugin-shell'
-import { useChatStore, type Message } from './stores/chat'
+import { useChatStore, type TimelineEvent } from './stores/chat'
 import { useConfigStore } from './stores/config'
 import { useFilesystemStore } from './stores/filesystem'
 import SettingsDialog from './components/Settings/index.vue'
@@ -416,7 +439,6 @@ import {
   registerChatEventListeners,
   type ToolApprovalRequest
 } from './composables/useChatEventBridge'
-import { useChatMessageArtifacts } from './composables/useChatMessageArtifacts'
 import { usePetWindowBehavior } from './composables/usePetWindowBehavior'
 import { normalizeToolName, renderToolLabel, truncateMiddle } from './utils/toolDisplay'
 
@@ -437,12 +459,6 @@ interface PathInfo {
   is_dir: boolean
   size?: number
   extension?: string
-}
-
-interface GenerateImageResponse {
-  userMessage: Message
-  assistantMessage: Message
-  imageUrl: string
 }
 
 type ConversationMenuCommand = 'pin' | 'rename' | 'delete'
@@ -476,7 +492,6 @@ const createConversationWorkspaceDirectory = ref<string | null>(null)
 const pendingUploads = ref<UploadAttachment[]>([])
 const workspaceRef = ref<HTMLElement | null>(null)
 const messageListRef = ref<HTMLElement | null>(null)
-const activeAssistantMessageIdByConversation = ref<Record<string, string>>({})
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
 const resolvingToolApproval = ref(false)
 const pausingStream = ref(false)
@@ -505,21 +520,6 @@ const MODEL_LABELS: Record<string, string> = {
   'doubao-seed-1-6-thinking-250715': '豆包 Doubao Seed 1.6 Thinking',
   'minimax-m2.5': 'MiniMax M2.5'
 }
-const TOOL_STEP_LABELS: Record<string, string> = {
-  workspace_run_command: '执行命令',
-  workspace_list_directory: '浏览目录',
-  workspace_read_file: '读取文件',
-  workspace_write_file: '写入文件',
-  workspace_search_files: '搜索文件',
-  workspace_edit_file: '编辑文件',
-  workspace_delete_file: '删除文件',
-  workspace_move_file: '移动文件',
-  workspace_copy_file: '复制文件',
-  workspace_create_directory: '创建目录',
-  skills_discover: '发现技能',
-  skills_plan: '规划步骤',
-  skills_execute: '执行技能'
-}
 
 function loadPinnedConversationIds() {
   if (typeof window === 'undefined') return []
@@ -547,57 +547,22 @@ function persistPinnedConversationIds(ids: string[]) {
   window.localStorage.setItem(PINNED_CONVERSATION_STORAGE_KEY, JSON.stringify(normalized))
 }
 
-const activeAssistantMessageId = computed<string | null>({
-  get: () => {
-    const conversationId = chatStore.currentConversationId
-    if (!conversationId) return null
-    return activeAssistantMessageIdByConversation.value[conversationId] || null
-  },
-  set: (value) => {
-    const conversationId = chatStore.currentConversationId
-    if (!conversationId) return
-    if (!value) {
-      delete activeAssistantMessageIdByConversation.value[conversationId]
-      return
-    }
-    activeAssistantMessageIdByConversation.value[conversationId] = value
-  }
-})
-
-const {
-  reasoningByMessage,
-  toolStreamItems,
-  collapseActiveReasoning,
-  getReasoningEntry,
-  toggleReasoning,
-  isStreamingMessage,
-  isRenderableMessage,
-  hydrateConversationArtifacts,
-  shouldShowMessageBubble,
-  shouldRenderAssistantContent,
-  persistToolItemsForActiveMessage,
-  initializeAssistantArtifacts,
-  clearAssistantArtifacts,
-  getToolItemsForMessage,
-  shouldShowToolProgress,
-  isToolListCollapsed,
-  toggleCompactToolList,
-  getCompactToolSummaryTitle,
-  getCompactToolSummaryCount,
-  renderToolItemName,
-  getToolStatusLabel,
-  renderToolArguments,
-  renderToolResult,
-  getDisplayedMessageContent
-} = useChatMessageArtifacts({
-  chatStore,
-  activeAssistantMessageId,
-  toolStepLabels: TOOL_STEP_LABELS
-})
-
 const isCurrentConversationStreaming = computed(() =>
   chatStore.isConversationStreaming(chatStore.currentConversationId)
 )
+
+const shouldShowStandaloneTypingBubble = computed(() => {
+  if (!isCurrentConversationStreaming.value) return false
+  const events = chatStore.currentTimeline
+  if (events.length === 0) return true
+
+  const currentTurnId = events[events.length - 1].turn_id
+  const hasAssistantEventsInCurrentTurn = events.some((event) => {
+    return event.turn_id === currentTurnId && event.event_type !== 'user_message'
+  })
+
+  return !hasAssistantEventsInCurrentTurn
+})
 
 const conversationsForDisplay = computed(() => {
   const pinnedSet = new Set(pinnedConversationIds.value)
@@ -634,7 +599,349 @@ const modelOptions = computed(() => {
 
 const toolDisplayMode = computed(() => (configStore.config.tool_display_mode === 'full' ? 'full' : 'compact'))
 const isToolDisplayFull = computed(() => toolDisplayMode.value === 'full')
+
 const shouldStickToMessageBottom = ref(true)
+const timelineReasoningCollapsedByEventId = ref<Record<string, boolean>>({})
+
+interface TimelineTurnDisplay {
+  turnId: string
+  userText: string
+  userCreatedAt: string
+  assistantCreatedAt: string
+  assistantEvents: TimelineEvent[]
+}
+
+const timelineTurnsForDisplay = computed<TimelineTurnDisplay[]>(() => {
+  const turns: TimelineTurnDisplay[] = []
+  const byTurn = new Map<string, TimelineTurnDisplay>()
+
+  for (const event of chatStore.currentTimeline) {
+    let turn = byTurn.get(event.turn_id)
+    if (!turn) {
+      turn = {
+        turnId: event.turn_id,
+        userText: '',
+        userCreatedAt: event.created_at,
+        assistantCreatedAt: '',
+        assistantEvents: []
+      }
+      byTurn.set(event.turn_id, turn)
+      turns.push(turn)
+    }
+
+    if (event.event_type === 'user_message') {
+      const content =
+        typeof event.payload.content === 'string'
+          ? event.payload.content
+          : String(event.payload.content ?? '')
+      turn.userText = content
+      turn.userCreatedAt = event.created_at
+      continue
+    }
+
+    turn.assistantEvents.push(event)
+    if (!turn.assistantCreatedAt) {
+      turn.assistantCreatedAt = event.created_at
+    }
+  }
+
+  return turns
+})
+
+function getTimelinePayloadValue(event: TimelineEvent, key: string) {
+  const payload = event.payload || {}
+  return payload[key]
+}
+
+function getTimelineText(event: TimelineEvent) {
+  const value = getTimelinePayloadValue(event, 'text')
+  return typeof value === 'string' ? value : String(value || '')
+}
+
+function getTimelineReasoningText(event: TimelineEvent) {
+  return getTimelineText(event)
+}
+
+function getTimelineToolName(event: TimelineEvent) {
+  const name = getTimelinePayloadValue(event, 'name')
+  if (typeof name === 'string' && name.trim()) return renderToolLabel(name)
+  return '工具执行'
+}
+
+function getTimelineToolArguments(event: TimelineEvent) {
+  const raw = getTimelinePayloadValue(event, 'argumentsChunk')
+  if (typeof raw !== 'string') return ''
+  return raw
+}
+
+function getTimelineToolResult(event: TimelineEvent) {
+  const error = getTimelinePayloadValue(event, 'error')
+  if (typeof error === 'string' && error.trim()) {
+    return JSON.stringify({ error }, null, 2)
+  }
+
+  const result = getTimelinePayloadValue(event, 'result')
+  if (typeof result === 'string') return result
+  if (result === null || result === undefined) return ''
+  try {
+    return JSON.stringify(result, null, 2)
+  } catch {
+    return String(result)
+  }
+}
+
+function getTimelineToolResultStatus(event: TimelineEvent) {
+  const error = getTimelinePayloadValue(event, 'error')
+  return typeof error === 'string' && error.trim() ? 'error' : 'done'
+}
+
+function getTimelineToolCompactStatus(event: TimelineEvent) {
+  if (event.event_type === 'assistant_tool_call') {
+    return '运行中'
+  }
+  if (event.event_type === 'assistant_tool_result') {
+    return getTimelineToolResultStatus(event) === 'error' ? '失败' : '完成'
+  }
+  return ''
+}
+
+function getTimelineToolCompactDetail(event: TimelineEvent, turnEvents: TimelineEvent[]) {
+  const toolName = String(getTimelinePayloadValue(event, 'name') || '')
+  const normalized = normalizeToolName(toolName)
+
+  if (event.event_type === 'assistant_tool_call') {
+    const callArgs = parseJsonObjectLoose(getTimelinePayloadValue(event, 'argumentsChunk'))
+    return summarizeToolAction(normalized, callArgs)
+  }
+
+  if (event.event_type === 'assistant_tool_result') {
+    const error = getTimelinePayloadValue(event, 'error')
+    if (typeof error === 'string' && error.trim()) {
+      return `错误: ${shortenText(error, 72)}`
+    }
+
+    const linkedCallSummary = findLinkedToolCallSummary(event, turnEvents)
+    if (linkedCallSummary) return linkedCallSummary
+
+    const resultObject = parseJsonObjectLoose(getTimelinePayloadValue(event, 'result'))
+    return summarizeToolResult(normalized, resultObject)
+  }
+
+  return ''
+}
+
+function findLinkedToolCallSummary(event: TimelineEvent, turnEvents: TimelineEvent[]) {
+  const targetToolCallId = event.tool_call_id || null
+  if (!targetToolCallId) return ''
+
+  for (let i = turnEvents.length - 1; i >= 0; i -= 1) {
+    const candidate = turnEvents[i]
+    if (candidate.id === event.id) continue
+    if (candidate.event_type !== 'assistant_tool_call') continue
+    if (candidate.tool_call_id !== targetToolCallId) continue
+    const callArgs = parseJsonObjectLoose(getTimelinePayloadValue(candidate, 'argumentsChunk'))
+    const toolName = String(getTimelinePayloadValue(candidate, 'name') || '')
+    const summary = summarizeToolAction(normalizeToolName(toolName), callArgs)
+    if (summary) return summary
+  }
+  return ''
+}
+
+function summarizeToolAction(toolName: string, args: Record<string, unknown> | null) {
+  if (!args) return ''
+
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = readNestedString(args, key)
+      if (value) return value
+    }
+    return ''
+  }
+
+  if (toolName === 'browser') {
+    const action = pick('action')
+    const url = pick('params.url', 'url')
+    const selector = pick('params.selector', 'selector')
+    if (action === 'navigate' && url) return `打开链接: ${shortenUrl(url)}`
+    if (action === 'click' && selector) return `点击元素: ${shortenText(selector, 52)}`
+    if (action === 'type') {
+      const target = selector || pick('params.text', 'text')
+      if (target) return `输入: ${shortenText(target, 52)}`
+    }
+    if (action) return `浏览器动作: ${action}`
+  }
+
+  if (toolName === 'browser_navigate') {
+    const url = pick('url')
+    if (url) return `打开链接: ${shortenUrl(url)}`
+  }
+
+  if (toolName === 'web_fetch') {
+    const url = pick('url')
+    if (url) return `抓取网页: ${shortenUrl(url)}`
+  }
+
+  if (toolName === 'web_search') {
+    const query = pick('query', 'q')
+    if (query) return `搜索: ${shortenText(query, 56)}`
+  }
+
+  if (toolName === 'workspace_run_command') {
+    const command = pick('command')
+    if (command) return `执行命令: ${shortenText(command, 68)}`
+  }
+
+  if (toolName === 'workspace_list_directory') {
+    const path = pick('path')
+    if (path) return `查看目录: ${shortenPath(path)}`
+    return '查看目录内容'
+  }
+
+  if (toolName === 'workspace_read_file') {
+    const path = pick('path')
+    if (path) return `读取文件: ${shortenPath(path)}`
+  }
+
+  if (toolName === 'workspace_write_file' || toolName === 'workspace_edit_file') {
+    const path = pick('path')
+    if (path) return `写入文件: ${shortenPath(path)}`
+  }
+
+  if (toolName === 'workspace_grep') {
+    const pattern = pick('pattern')
+    const path = pick('path')
+    if (pattern && path) return `搜索 "${shortenText(pattern, 28)}" 于 ${shortenPath(path)}`
+    if (pattern) return `搜索内容: ${shortenText(pattern, 56)}`
+  }
+
+  if (toolName === 'workspace_glob') {
+    const pattern = pick('pattern')
+    const path = pick('path')
+    if (pattern && path) return `匹配 ${shortenText(pattern, 32)} 于 ${shortenPath(path)}`
+    if (pattern) return `匹配文件: ${shortenText(pattern, 56)}`
+  }
+
+  if (toolName === 'skills_install_from_repo') {
+    const repo = pick('repo_url', 'repoUrl')
+    if (repo) return `安装技能: ${shortenUrl(repo)}`
+  }
+
+  const fallback = firstObjectEntrySummary(args)
+  return fallback ? `参数: ${fallback}` : ''
+}
+
+function summarizeToolResult(toolName: string, result: Record<string, unknown> | null) {
+  if (!result) return ''
+
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = readNestedString(result, key)
+      if (value) return value
+    }
+    return ''
+  }
+
+  if (toolName === 'browser' || toolName === 'browser_navigate') {
+    const url = pick('url', 'current_url', 'final_url')
+    if (url) return `页面: ${shortenUrl(url)}`
+  }
+
+  if (toolName === 'web_fetch') {
+    const url = pick('url')
+    const status = pick('status', 'status_code')
+    if (url && status) return `抓取完成: ${shortenUrl(url)} (${status})`
+    if (url) return `抓取完成: ${shortenUrl(url)}`
+  }
+
+  if (toolName === 'web_search') {
+    const query = pick('query', 'q')
+    if (query) return `搜索完成: ${shortenText(query, 56)}`
+  }
+
+  const fallback = firstObjectEntrySummary(result)
+  return fallback ? `结果: ${fallback}` : ''
+}
+
+function parseJsonObjectLoose(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value !== 'string') return null
+
+  let candidate = value.trim()
+  if (!candidate) return null
+
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+      if (typeof parsed === 'string') {
+        const next = parsed.trim()
+        if (!next || next === candidate) break
+        candidate = next
+        continue
+      }
+      break
+    } catch {
+      break
+    }
+  }
+  return null
+}
+
+function readNestedString(source: Record<string, unknown>, path: string) {
+  const parts = path.split('.')
+  let current: unknown = source
+  for (const part of parts) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return ''
+    current = (current as Record<string, unknown>)[part]
+  }
+  if (typeof current === 'string') {
+    const trimmed = current.trim()
+    return trimmed || ''
+  }
+  if (typeof current === 'number' || typeof current === 'boolean') {
+    return String(current)
+  }
+  return ''
+}
+
+function firstObjectEntrySummary(source: Record<string, unknown>) {
+  const entries = Object.entries(source)
+  for (const [key, raw] of entries) {
+    if (raw === null || raw === undefined) continue
+    if (typeof raw === 'object') continue
+    const text = String(raw).trim()
+    if (!text) continue
+    return `${key}=${shortenText(text, 48)}`
+  }
+  return ''
+}
+
+function shortenText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1)}...`
+}
+
+function shortenUrl(url: string) {
+  return truncateMiddle(url, 72)
+}
+
+function shortenPath(path: string) {
+  return truncateMiddle(path, 68)
+}
+
+function isTimelineReasoningCollapsed(eventId: string) {
+  return timelineReasoningCollapsedByEventId.value[eventId] ?? false
+}
+
+function toggleTimelineReasoning(eventId: string) {
+  timelineReasoningCollapsedByEventId.value[eventId] = !isTimelineReasoningCollapsed(eventId)
+}
 
 function getMessageListDistanceFromBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight
@@ -684,6 +991,7 @@ watch(
   () => chatStore.currentConversationId,
   () => {
     pausingStream.value = false
+    timelineReasoningCollapsedByEventId.value = {}
     shouldStickToMessageBottom.value = true
     scheduleScrollMessageListToBottom(true)
   },
@@ -691,7 +999,7 @@ watch(
 )
 
 watch(
-  () => chatStore.currentMessages.length,
+  () => chatStore.currentTimeline.length,
   () => {
     scheduleScrollMessageListToBottom()
   },
@@ -700,31 +1008,15 @@ watch(
 
 watch(
   () => {
-    const messages = chatStore.currentMessages
-    if (messages.length === 0) return ''
-    const last = messages[messages.length - 1]
-    return `${last.id}:${last.content.length}`
+    const events = chatStore.currentTimeline
+    if (events.length === 0) return ''
+    const last = events[events.length - 1]
+    return `${last.id}:${last.seq}`
   },
   () => {
     scheduleScrollMessageListToBottom()
   },
   { flush: 'post' }
-)
-
-watch(
-  toolStreamItems,
-  () => {
-    scheduleScrollMessageListToBottom()
-  },
-  { deep: true, flush: 'post' }
-)
-
-watch(
-  reasoningByMessage,
-  () => {
-    scheduleScrollMessageListToBottom()
-  },
-  { deep: true, flush: 'post' }
 )
 
 watch(
@@ -938,13 +1230,13 @@ const approvalDetailText = computed(() => {
 
   return ''
 })
+
 onMounted(async () => {
   await Promise.all([chatStore.loadConversations(), configStore.loadConfig()])
   if (chatStore.conversations.length > 0) {
     const first = chatStore.conversations[0]
     chatStore.setCurrentConversation(first.id)
-    await chatStore.loadMessages(first.id)
-    hydrateConversationArtifacts(first.id)
+    await chatStore.loadTimeline(first.id)
     await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(first.id))
     createDialogVisible.value = false
   } else {
@@ -955,9 +1247,6 @@ onMounted(async () => {
   unlistenFns.push(
     ...(await registerChatEventListeners({
       chatStore,
-      activeAssistantMessageId,
-      reasoningByMessage,
-      toolStreamItems,
       onToolApprovalRequest: (request) => {
         pendingToolApproval.value = request
       },
@@ -968,11 +1257,8 @@ onMounted(async () => {
           resolvingToolApproval.value = false
         }
         if (conversationId === chatStore.currentConversationId) {
-          persistToolItemsForActiveMessage()
-          collapseActiveReasoning()
           pausingStream.value = false
         }
-        delete activeAssistantMessageIdByConversation.value[conversationId]
       }
     }))
   )
@@ -1157,11 +1443,9 @@ function removeUpload(uploadId: string) {
 
 async function handleSelectConversation(id: string) {
   chatStore.setCurrentConversation(id)
-  await chatStore.loadMessages(id)
-  hydrateConversationArtifacts(id)
+  await chatStore.loadTimeline(id)
   await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(id))
   generatingImage.value = false
-  toolStreamItems.value = []
   if (pendingToolApproval.value?.conversationId !== id) {
     pendingToolApproval.value = null
     resolvingToolApproval.value = false
@@ -1247,14 +1531,12 @@ async function handleDeleteConversation(id: string) {
     await chatStore.deleteConversation(id)
     persistPinnedConversationIds(pinnedConversationIds.value.filter((item) => item !== id))
     await persistConversationWorkspaceDirectory(id, null)
-    delete activeAssistantMessageIdByConversation.value[id]
 
     if (chatStore.conversations.length === 0) {
       chatStore.setCurrentConversation(null)
       await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
       pausingStream.value = false
       generatingImage.value = false
-      toolStreamItems.value = []
       pendingToolApproval.value = null
       resolvingToolApproval.value = false
       createDialogVisible.value = true
@@ -1296,8 +1578,7 @@ async function handleCreateConversation() {
     const conversation = await chatStore.createConversation(title, model)
     await persistConversationWorkspaceDirectory(conversation.id, selectedWorkspace)
     chatStore.setCurrentConversation(conversation.id)
-    await chatStore.loadMessages(conversation.id)
-    hydrateConversationArtifacts(conversation.id)
+    await chatStore.loadTimeline(conversation.id)
     await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(conversation.id))
     inputMessage.value = ''
     createConversationWorkspaceDirectory.value = null
@@ -1319,35 +1600,12 @@ async function sendMessage() {
     return
   }
   const messageContentForModel = buildMessageForModel(content, uploads, workspaceDirectory)
-  const messageContentForView = buildMessageForDisplay(content, uploads)
 
   inputMessage.value = ''
   pendingUploads.value = []
-  toolStreamItems.value = []
   if (pendingToolApproval.value?.conversationId === conversationId) {
     pendingToolApproval.value = null
   }
-
-  const userMsg: Message = {
-    id: Date.now().toString(),
-    conversation_id: conversationId,
-    role: 'user',
-    content: messageContentForView,
-    created_at: new Date().toISOString()
-  }
-  chatStore.addMessage(conversationId, userMsg)
-
-  const assistantMsg: Message = {
-    id: (Date.now() + 1).toString(),
-    conversation_id: conversationId,
-    role: 'assistant',
-    content: '',
-    created_at: new Date().toISOString()
-  }
-  chatStore.addMessage(conversationId, assistantMsg)
-  initializeAssistantArtifacts(assistantMsg.id)
-
-  activeAssistantMessageIdByConversation.value[conversationId] = assistantMsg.id
   chatStore.setConversationStreaming(conversationId, true)
   pausingStream.value = false
 
@@ -1359,16 +1617,12 @@ async function sendMessage() {
     })
   } catch (error) {
     chatStore.setConversationStreaming(conversationId, false)
-    removePendingAssistantMessage(conversationId, assistantMsg.id)
-    delete activeAssistantMessageIdByConversation.value[conversationId]
-    clearAssistantArtifacts(assistantMsg.id)
     if (pendingToolApproval.value?.conversationId === conversationId) {
       pendingToolApproval.value = null
       resolvingToolApproval.value = false
     }
     if (chatStore.currentConversationId === conversationId) {
       pausingStream.value = false
-      toolStreamItems.value = []
       inputMessage.value = content
       pendingUploads.value = uploads
     }
@@ -1398,30 +1652,16 @@ async function generateImage() {
   inputMessage.value = ''
 
   try {
-    const result = await invoke<GenerateImageResponse>('generate_image', {
+    await invoke('generate_image', {
       conversationId,
       prompt
     })
-    chatStore.addMessage(conversationId, result.userMessage)
-    chatStore.addMessage(conversationId, result.assistantMessage)
+    await chatStore.loadTimeline(conversationId)
   } catch (error) {
     inputMessage.value = prompt
     ElMessage.error(getErrorMessage(error, '文生图失败'))
   } finally {
     generatingImage.value = false
-  }
-}
-
-function removePendingAssistantMessage(conversationId: string, assistantId: string) {
-  const messages = chatStore.messages[conversationId]
-  if (!messages || messages.length === 0) return
-
-  const index = messages.findIndex((message) => message.id === assistantId)
-  if (index < 0) return
-
-  const target = messages[index]
-  if (target.role === 'assistant' && !target.content.trim()) {
-    messages.splice(index, 1)
   }
 }
 
@@ -1487,15 +1727,6 @@ async function buildUploadAttachment(path: string): Promise<UploadAttachment> {
   }
 
   return attachment
-}
-
-function buildMessageForDisplay(content: string, uploads: UploadAttachment[]) {
-  const trimmed = content.trim()
-  if (uploads.length === 0) return trimmed
-
-  const fileLines = uploads.map((item) => `- ${item.name}`)
-  const filesBlock = `\n\n[已上传文件]\n${fileLines.join('\n')}`
-  return `${trimmed || '请分析我上传的文件。'}${filesBlock}`
 }
 
 function buildMessageForModel(content: string, uploads: UploadAttachment[], workspaceDirectory: string) {

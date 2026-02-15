@@ -237,6 +237,57 @@ struct RuntimeToolCatalog {
     tool_map: HashMap<String, RuntimeTool>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingTimelineEvent {
+    turn_id: String,
+    seq: i64,
+    event_type: TimelineEventType,
+    tool_call_id: Option<String>,
+    payload: Value,
+    created_at: String,
+}
+
+async fn insert_timeline_event(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    event: &PendingTimelineEvent,
+) -> Result<(), String> {
+    let id = Uuid::new_v4().to_string();
+    let payload = serde_json::to_string(&event.payload).map_err(|e| e.to_string())?;
+    let event_type = serde_json::to_string(&event.event_type)
+        .map_err(|e| e.to_string())?
+        .trim_matches('"')
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO message_events (id, conversation_id, turn_id, seq, event_type, tool_call_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(conversation_id)
+    .bind(&event.turn_id)
+    .bind(event.seq)
+    .bind(event_type)
+    .bind(event.tool_call_id.as_deref())
+    .bind(payload)
+    .bind(&event.created_at)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+async fn insert_timeline_events(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    events: &[PendingTimelineEvent],
+) -> Result<(), String> {
+    for event in events {
+        insert_timeline_event(pool, conversation_id, event).await?;
+    }
+    Ok(())
+}
+
 async fn insert_message(
     pool: &SqlitePool,
     conversation_id: &str,
@@ -610,18 +661,29 @@ async fn build_runtime_tool_catalog(
     })
 }
 
+struct StreamRoundOutput {
+    stream_result: LlmStreamResult,
+    timeline_events: Vec<PendingTimelineEvent>,
+}
+
 async fn run_stream_round(
     llm_service: &LlmService,
     window: &Window,
     conversation_id: &str,
+    turn_id: &str,
+    seq_counter: &mut i64,
     model: &str,
     context_messages: Vec<ChatMessage>,
     available_tools: &[ChatTool],
     stop_flag: Arc<AtomicBool>,
-) -> Result<LlmStreamResult, String> {
+) -> Result<StreamRoundOutput, String> {
     let conversation_id_for_stream = conversation_id.to_string();
+    let turn_id_for_stream = turn_id.to_string();
     let window_for_stream = window.clone();
-    llm_service
+    let mut timeline_events: Vec<PendingTimelineEvent> = Vec::new();
+    let mut stream_tool_call_ids_by_index: HashMap<usize, String> = HashMap::new();
+    let mut stream_tool_call_names_by_index: HashMap<usize, String> = HashMap::new();
+    let stream_result = llm_service
         .chat_stream_with_tools(
             model,
             context_messages,
@@ -630,31 +692,103 @@ async fn run_stream_round(
             } else {
                 Some(available_tools.to_vec())
             },
-            move |event| match event {
+            |event| match event {
                 LlmStreamEvent::Content(chunk) => {
+                    *seq_counter += 1;
+                    let seq = *seq_counter;
+                    let created_at = Utc::now().to_rfc3339();
+                    timeline_events.push(PendingTimelineEvent {
+                        turn_id: turn_id_for_stream.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantText,
+                        tool_call_id: None,
+                        payload: json!({ "text": chunk.clone() }),
+                        created_at: created_at.clone(),
+                    });
                     let _ = window_for_stream.emit(
                         "chat-chunk",
                         json!({
                             "conversationId": conversation_id_for_stream.clone(),
+                            "turnId": turn_id_for_stream.clone(),
+                            "seq": seq,
+                            "eventType": "assistant_text",
+                            "createdAt": created_at,
                             "chunk": chunk
                         }),
                     );
                 }
                 LlmStreamEvent::Reasoning(chunk) => {
+                    *seq_counter += 1;
+                    let seq = *seq_counter;
+                    let created_at = Utc::now().to_rfc3339();
+                    timeline_events.push(PendingTimelineEvent {
+                        turn_id: turn_id_for_stream.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantReasoning,
+                        tool_call_id: None,
+                        payload: json!({ "text": chunk.clone() }),
+                        created_at: created_at.clone(),
+                    });
                     let _ = window_for_stream.emit(
                         "chat-reasoning",
                         json!({
                             "conversationId": conversation_id_for_stream.clone(),
+                            "turnId": turn_id_for_stream.clone(),
+                            "seq": seq,
+                            "eventType": "assistant_reasoning",
+                            "createdAt": created_at,
                             "chunk": chunk
                         }),
                     );
                 }
                 LlmStreamEvent::ToolCallDelta(delta) => {
+                    if let Some(id) = delta
+                        .id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        stream_tool_call_ids_by_index.insert(delta.index, id.to_string());
+                    }
+                    if let Some(name) = delta
+                        .name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        stream_tool_call_names_by_index.insert(delta.index, name.to_string());
+                    }
+
+                    let resolved_tool_call_id = stream_tool_call_ids_by_index
+                        .entry(delta.index)
+                        .or_insert_with(|| format!("{}_tool_call_{}", turn_id_for_stream, delta.index))
+                        .clone();
+                    let resolved_name = stream_tool_call_names_by_index.get(&delta.index).cloned();
+
+                    *seq_counter += 1;
+                    let seq = *seq_counter;
+                    let created_at = Utc::now().to_rfc3339();
+                    timeline_events.push(PendingTimelineEvent {
+                        turn_id: turn_id_for_stream.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantToolCall,
+                        tool_call_id: Some(resolved_tool_call_id.clone()),
+                        payload: json!({
+                            "index": delta.index,
+                            "name": resolved_name,
+                            "argumentsChunk": delta.arguments_chunk
+                        }),
+                        created_at: created_at.clone(),
+                    });
                     let payload = json!({
                         "conversationId": conversation_id_for_stream.clone(),
+                        "turnId": turn_id_for_stream.clone(),
+                        "seq": seq,
+                        "eventType": "assistant_tool_call",
+                        "createdAt": created_at,
                         "index": delta.index,
-                        "toolCallId": delta.id,
-                        "name": delta.name,
+                        "toolCallId": resolved_tool_call_id,
+                        "name": resolved_name,
                         "argumentsChunk": delta.arguments_chunk,
                     });
                     let _ = window_for_stream.emit("chat-tool-call", payload);
@@ -663,12 +797,20 @@ async fn run_stream_round(
             move || stop_flag.load(Ordering::Relaxed),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    Ok(StreamRoundOutput {
+        stream_result,
+        timeline_events,
+    })
 }
 
 fn emit_tool_result_event(
     window: &Window,
     conversation_id: &str,
+    turn_id: &str,
+    seq: i64,
+    created_at: &str,
     tool_call: &ChatToolCall,
     result: Option<&str>,
     error: Option<&str>,
@@ -678,6 +820,10 @@ fn emit_tool_result_event(
             "chat-tool-result",
             json!({
                 "conversationId": conversation_id,
+                "turnId": turn_id,
+                "seq": seq,
+                "eventType": "assistant_tool_result",
+                "createdAt": created_at,
                 "toolCallId": &tool_call.id,
                 "name": &tool_call.function.name,
                 "result": result,
@@ -685,6 +831,46 @@ fn emit_tool_result_event(
             }),
         )
         .map_err(|e| e.to_string())
+}
+
+async fn emit_and_record_tool_result_event(
+    pool: &SqlitePool,
+    window: &Window,
+    conversation_id: &str,
+    turn_id: &str,
+    seq_counter: &mut i64,
+    tool_call: &ChatToolCall,
+    result: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), String> {
+    *seq_counter += 1;
+    let seq = *seq_counter;
+    let created_at = Utc::now().to_rfc3339();
+    emit_tool_result_event(
+        window,
+        conversation_id,
+        turn_id,
+        seq,
+        &created_at,
+        tool_call,
+        result,
+        error,
+    )?;
+
+    let event = PendingTimelineEvent {
+        turn_id: turn_id.to_string(),
+        seq,
+        event_type: TimelineEventType::AssistantToolResult,
+        tool_call_id: Some(tool_call.id.clone()),
+        payload: json!({
+            "name": &tool_call.function.name,
+            "result": result,
+            "error": error
+        }),
+        created_at,
+    };
+    insert_timeline_event(pool, conversation_id, &event).await?;
+    Ok(())
 }
 
 fn build_tool_call_metadata(tool_call: &ChatToolCall) -> Result<String, String> {
@@ -920,14 +1106,32 @@ fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTool>) {
 }
 
 fn parse_tool_arguments(raw: &str) -> Value {
-    if raw.trim().is_empty() {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return json!({});
     }
 
-    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| {
-        json!({
-            "raw_arguments": raw
-        })
+    let mut candidate = trimmed.to_string();
+    for _ in 0..3 {
+        match serde_json::from_str::<Value>(&candidate) {
+            Ok(Value::Object(map)) => return Value::Object(map),
+            Ok(Value::String(inner)) => {
+                let inner_trimmed = inner.trim();
+                if inner_trimmed.is_empty() {
+                    return json!({});
+                }
+                if inner_trimmed == candidate {
+                    break;
+                }
+                candidate = inner_trimmed.to_string();
+            }
+            Ok(_) => break,
+            Err(_) => break,
+        }
+    }
+
+    json!({
+        "raw_arguments": raw
     })
 }
 
@@ -2823,6 +3027,34 @@ pub async fn generate_image(
         .await
         .map_err(|e| e.to_string())?;
 
+    let image_turn_id = Uuid::new_v4().to_string();
+    insert_timeline_event(
+        &pool,
+        &conversation_id,
+        &PendingTimelineEvent {
+            turn_id: image_turn_id.clone(),
+            seq: 1,
+            event_type: TimelineEventType::UserMessage,
+            tool_call_id: None,
+            payload: json!({ "content": user_content.clone() }),
+            created_at: user_created_at.to_rfc3339(),
+        },
+    )
+    .await?;
+    insert_timeline_event(
+        &pool,
+        &conversation_id,
+        &PendingTimelineEvent {
+            turn_id: image_turn_id,
+            seq: 2,
+            event_type: TimelineEventType::AssistantText,
+            tool_call_id: None,
+            payload: json!({ "text": assistant_content.clone() }),
+            created_at: assistant_created_at.to_rfc3339(),
+        },
+    )
+    .await?;
+
     let user_message = Message {
         id: user_message_id,
         conversation_id: conversation_id.clone(),
@@ -2864,8 +3096,24 @@ pub async fn send_message(
     };
     let model_to_use = resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
     let llm_service = resolve_text_llm_service(&config, &model_to_use)?;
+    let turn_id = Uuid::new_v4().to_string();
+    let mut seq: i64 = 0;
 
     insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
+    seq += 1;
+    insert_timeline_event(
+        &pool,
+        &conversation_id,
+        &PendingTimelineEvent {
+            turn_id: turn_id.clone(),
+            seq,
+            event_type: TimelineEventType::UserMessage,
+            tool_call_id: None,
+            payload: json!({ "content": content }),
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await?;
 
     let mut messages = load_conversation_context(&pool, &conversation_id).await?;
     prepend_system_prompt(&mut messages, config.system_prompt.as_deref());
@@ -2876,6 +3124,20 @@ pub async fn send_message(
         .map_err(|e| e.to_string())?;
 
     insert_message(&pool, &conversation_id, "assistant", &response, None, None).await?;
+    seq += 1;
+    insert_timeline_event(
+        &pool,
+        &conversation_id,
+        &PendingTimelineEvent {
+            turn_id,
+            seq,
+            event_type: TimelineEventType::AssistantText,
+            tool_call_id: None,
+            payload: json!({ "text": response.clone() }),
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await?;
 
     Ok(response)
 }
@@ -2910,8 +3172,32 @@ pub async fn stream_message(
         let model_to_use =
             resolve_conversation_model(&pool, &conversation_id, &config.model).await?;
         let llm_service = resolve_text_llm_service(&config, &model_to_use)?;
+        let turn_id = Uuid::new_v4().to_string();
+        let mut seq: i64 = 0;
 
         insert_message(&pool, &conversation_id, "user", &content, None, None).await?;
+        seq += 1;
+        let user_event_created_at = Utc::now().to_rfc3339();
+        let user_event = PendingTimelineEvent {
+            turn_id: turn_id.clone(),
+            seq,
+            event_type: TimelineEventType::UserMessage,
+            tool_call_id: None,
+            payload: json!({ "content": content }),
+            created_at: user_event_created_at.clone(),
+        };
+        insert_timeline_event(&pool, &conversation_id, &user_event).await?;
+        let _ = window.emit(
+            "chat-user-message",
+            json!({
+                "conversationId": conversation_id,
+                "turnId": turn_id,
+                "seq": seq,
+                "eventType": "user_message",
+                "createdAt": user_event_created_at,
+                "content": content
+            }),
+        );
 
         let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
         prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
@@ -2930,16 +3216,20 @@ pub async fn stream_message(
                 return Ok(());
             }
 
-            let stream_result = run_stream_round(
+            let stream_round = run_stream_round(
                 &llm_service,
                 &window,
                 &conversation_id,
+                &turn_id,
+                &mut seq,
                 &model_to_use,
                 context_messages.clone(),
                 &available_tools,
                 stop_flag.clone(),
             )
             .await?;
+            insert_timeline_events(&pool, &conversation_id, &stream_round.timeline_events).await?;
+            let stream_result = stream_round.stream_result;
 
             let assistant_content = stream_result.content.clone();
             let assistant_reasoning = if stream_result.reasoning.trim().is_empty() {
@@ -2950,25 +3240,48 @@ pub async fn stream_message(
 
             if stream_result.cancelled {
                 for tool_call in &stream_result.tool_calls {
-                    let _ = emit_tool_result_event(
+                    let _ = emit_and_record_tool_result_event(
+                        &pool,
                         &window,
                         &conversation_id,
+                        &turn_id,
+                        &mut seq,
                         tool_call,
                         None,
                         Some("Paused by user"),
-                    );
+                    )
+                    .await;
                 }
 
                 let paused_content = if assistant_content.trim().is_empty() {
+                    seq += 1;
+                    let paused_created_at = Utc::now().to_rfc3339();
                     window
                         .emit(
                             "chat-chunk",
                             json!({
                                 "conversationId": conversation_id,
+                                "turnId": turn_id,
+                                "seq": seq,
+                                "eventType": "assistant_text",
+                                "createdAt": paused_created_at,
                                 "chunk": STREAM_PAUSED_TEXT
                             }),
                         )
                         .map_err(|e| e.to_string())?;
+                    insert_timeline_event(
+                        &pool,
+                        &conversation_id,
+                        &PendingTimelineEvent {
+                            turn_id: turn_id.clone(),
+                            seq,
+                            event_type: TimelineEventType::AssistantText,
+                            tool_call_id: None,
+                            payload: json!({ "text": STREAM_PAUSED_TEXT }),
+                            created_at: paused_created_at,
+                        },
+                    )
+                    .await?;
                     STREAM_PAUSED_TEXT.to_string()
                 } else {
                     assistant_content
@@ -3041,15 +3354,34 @@ pub async fn stream_message(
 
             if repeated_signature_rounds >= 2 {
                 let guard_text = REPEATED_TOOL_GUARD_TEXT;
+                seq += 1;
+                let guard_created_at = Utc::now().to_rfc3339();
                 window
                     .emit(
                         "chat-chunk",
                         json!({
                             "conversationId": conversation_id,
+                            "turnId": turn_id,
+                            "seq": seq,
+                            "eventType": "assistant_text",
+                            "createdAt": guard_created_at,
                             "chunk": guard_text
                         }),
                     )
                     .map_err(|e| e.to_string())?;
+                insert_timeline_event(
+                    &pool,
+                    &conversation_id,
+                    &PendingTimelineEvent {
+                        turn_id: turn_id.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantText,
+                        tool_call_id: None,
+                        payload: json!({ "text": guard_text }),
+                        created_at: guard_created_at,
+                    },
+                )
+                .await?;
                 insert_message(&pool, &conversation_id, "assistant", guard_text, None, None)
                     .await?;
                 window
@@ -3062,13 +3394,17 @@ pub async fn stream_message(
             for tool_call in stream_result.tool_calls {
                 if stop_flag.load(Ordering::Relaxed) {
                     cancelled_during_tools = true;
-                    emit_tool_result_event(
+                    emit_and_record_tool_result_event(
+                        &pool,
                         &window,
                         &conversation_id,
+                        &turn_id,
+                        &mut seq,
                         &tool_call,
                         None,
                         Some("Paused by user"),
-                    )?;
+                    )
+                    .await?;
                     let result_text = format_tool_error_result("Paused by user")?;
                     persist_tool_result_message(
                         &pool,
@@ -3094,13 +3430,17 @@ pub async fn stream_message(
 
                 if stop_flag.load(Ordering::Relaxed) {
                     cancelled_during_tools = true;
-                    emit_tool_result_event(
+                    emit_and_record_tool_result_event(
+                        &pool,
                         &window,
                         &conversation_id,
+                        &turn_id,
+                        &mut seq,
                         &tool_call,
                         None,
                         Some("Paused by user"),
-                    )?;
+                    )
+                    .await?;
                     let result_text = format_tool_error_result("Paused by user")?;
                     persist_tool_result_message(
                         &pool,
@@ -3123,13 +3463,17 @@ pub async fn stream_message(
                             "User denied execution of tool '{}'",
                             tool_call.function.name
                         );
-                        emit_tool_result_event(
+                        emit_and_record_tool_result_event(
+                            &pool,
                             &window,
                             &conversation_id,
+                            &turn_id,
+                            &mut seq,
                             &tool_call,
                             None,
                             Some(&error_text),
-                        )?;
+                        )
+                        .await?;
                         let result_text = format_tool_error_result(&error_text)?;
                         persist_tool_result_message(
                             &pool,
@@ -3160,13 +3504,17 @@ pub async fn stream_message(
                     Ok(value) => {
                         let result_text = serde_json::to_string_pretty(&value)
                             .unwrap_or_else(|_| value.to_string());
-                        emit_tool_result_event(
+                        emit_and_record_tool_result_event(
+                            &pool,
                             &window,
                             &conversation_id,
+                            &turn_id,
+                            &mut seq,
                             &tool_call,
                             Some(&result_text),
                             None,
-                        )?;
+                        )
+                        .await?;
                         persist_tool_result_message(
                             &pool,
                             &conversation_id,
@@ -3177,13 +3525,17 @@ pub async fn stream_message(
                         .await?;
                     }
                     Err(error_text) => {
-                        emit_tool_result_event(
+                        emit_and_record_tool_result_event(
+                            &pool,
                             &window,
                             &conversation_id,
+                            &turn_id,
+                            &mut seq,
                             &tool_call,
                             None,
                             Some(&error_text),
-                        )?;
+                        )
+                        .await?;
                         let result_text = format_tool_error_result(&error_text)?;
                         persist_tool_result_message(
                             &pool,
@@ -3359,6 +3711,254 @@ pub async fn get_messages(
         .collect();
 
     Ok(messages)
+}
+
+fn parse_timeline_event_type(raw: &str) -> TimelineEventType {
+    match raw {
+        "user_message" => TimelineEventType::UserMessage,
+        "assistant_reasoning" => TimelineEventType::AssistantReasoning,
+        "assistant_tool_call" => TimelineEventType::AssistantToolCall,
+        "assistant_tool_result" => TimelineEventType::AssistantToolResult,
+        _ => TimelineEventType::AssistantText,
+    }
+}
+
+#[tauri::command]
+pub async fn get_conversation_timeline(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<ConversationTimeline, String> {
+    let pool = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.db().pool().clone()
+    };
+
+    let event_rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            String,
+        ),
+    >(
+        "SELECT id, conversation_id, turn_id, seq, event_type, tool_call_id, payload, created_at
+         FROM message_events
+         WHERE conversation_id = ?
+         ORDER BY created_at ASC, seq ASC",
+    )
+    .bind(&conversation_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if !event_rows.is_empty() {
+        let events = event_rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    event_conversation_id,
+                    turn_id,
+                    seq,
+                    event_type_raw,
+                    tool_call_id,
+                    payload_raw,
+                    created_at_raw,
+                )| TimelineEvent {
+                    id,
+                    conversation_id: event_conversation_id,
+                    turn_id,
+                    seq,
+                    event_type: parse_timeline_event_type(&event_type_raw),
+                    tool_call_id,
+                    payload: serde_json::from_str(&payload_raw).unwrap_or_else(|_| json!({})),
+                    created_at: created_at_raw.parse().unwrap_or_else(|_| Utc::now()),
+                },
+            )
+            .collect();
+
+        return Ok(ConversationTimeline {
+            events,
+            legacy: false,
+        });
+    }
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, role, content, created_at, conversation_id, tool_calls, reasoning
+         FROM messages
+         WHERE conversation_id = ?
+         ORDER BY created_at ASC",
+    )
+    .bind(&conversation_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut events: Vec<TimelineEvent> = Vec::new();
+    let mut seq: i64 = 0;
+    let mut turn_number: i64 = 0;
+    let mut current_turn_id = "legacy-turn-0".to_string();
+
+    for (message_id, role_raw, content, created_at_raw, event_conversation_id, tool_calls_raw, reasoning_raw) in rows {
+        let created_at = created_at_raw.parse().unwrap_or_else(|_| Utc::now());
+        match role_raw.as_str() {
+            "user" => {
+                turn_number += 1;
+                current_turn_id = format!("legacy-turn-{}", turn_number);
+                seq += 1;
+                events.push(TimelineEvent {
+                    id: format!("legacy-{}-{}", message_id, seq),
+                    conversation_id: event_conversation_id,
+                    turn_id: current_turn_id.clone(),
+                    seq,
+                    event_type: TimelineEventType::UserMessage,
+                    tool_call_id: None,
+                    payload: json!({ "content": content }),
+                    created_at: created_at.clone(),
+                });
+            }
+            "assistant" => {
+                if turn_number == 0 {
+                    turn_number = 1;
+                    current_turn_id = "legacy-turn-1".to_string();
+                }
+
+                let reasoning = reasoning_raw
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if !reasoning.is_empty() {
+                    seq += 1;
+                    events.push(TimelineEvent {
+                        id: format!("legacy-{}-{}", message_id, seq),
+                        conversation_id: event_conversation_id.clone(),
+                        turn_id: current_turn_id.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantReasoning,
+                        tool_call_id: None,
+                        payload: json!({ "text": reasoning }),
+                        created_at,
+                    });
+                }
+
+                if let Some(raw) = tool_calls_raw.as_deref() {
+                    if let Ok(tool_calls) = serde_json::from_str::<Vec<ToolCall>>(raw) {
+                        for (index, call) in tool_calls.into_iter().enumerate() {
+                            seq += 1;
+                            let arguments_chunk = serde_json::to_string(&call.arguments)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            events.push(TimelineEvent {
+                                id: format!("legacy-{}-{}", message_id, seq),
+                                conversation_id: event_conversation_id.clone(),
+                                turn_id: current_turn_id.clone(),
+                                seq,
+                                event_type: TimelineEventType::AssistantToolCall,
+                                tool_call_id: Some(call.id),
+                                payload: json!({
+                                    "index": index,
+                                    "name": call.tool_name,
+                                    "argumentsChunk": arguments_chunk
+                                }),
+                                created_at: created_at.clone(),
+                            });
+                        }
+                    } else if let Ok(tool_calls) = serde_json::from_str::<Vec<ChatToolCall>>(raw) {
+                        for (index, call) in tool_calls.into_iter().enumerate() {
+                            seq += 1;
+                            events.push(TimelineEvent {
+                                id: format!("legacy-{}-{}", message_id, seq),
+                                conversation_id: event_conversation_id.clone(),
+                                turn_id: current_turn_id.clone(),
+                                seq,
+                                event_type: TimelineEventType::AssistantToolCall,
+                                tool_call_id: Some(call.id),
+                                payload: json!({
+                                    "index": index,
+                                    "name": call.function.name,
+                                    "argumentsChunk": call.function.arguments
+                                }),
+                                created_at: created_at.clone(),
+                            });
+                        }
+                    }
+                }
+
+                if !content.trim().is_empty() {
+                    seq += 1;
+                    events.push(TimelineEvent {
+                        id: format!("legacy-{}-{}", message_id, seq),
+                        conversation_id: event_conversation_id,
+                        turn_id: current_turn_id.clone(),
+                        seq,
+                        event_type: TimelineEventType::AssistantText,
+                        tool_call_id: None,
+                        payload: json!({ "text": content }),
+                        created_at: created_at.clone(),
+                    });
+                }
+            }
+            "tool" => {
+                if turn_number == 0 {
+                    turn_number = 1;
+                    current_turn_id = "legacy-turn-1".to_string();
+                }
+
+                let metadata = tool_calls_raw
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .unwrap_or_else(|| json!({}));
+                let tool_call_id = metadata
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let tool_name = metadata
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let error = serde_json::from_str::<Value>(&content)
+                    .ok()
+                    .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string));
+
+                seq += 1;
+                events.push(TimelineEvent {
+                    id: format!("legacy-{}-{}", message_id, seq),
+                    conversation_id: event_conversation_id,
+                    turn_id: current_turn_id.clone(),
+                    seq,
+                    event_type: TimelineEventType::AssistantToolResult,
+                    tool_call_id,
+                    payload: json!({
+                        "name": tool_name,
+                        "result": content,
+                        "error": error
+                    }),
+                    created_at: created_at.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ConversationTimeline {
+        events,
+        legacy: true,
+    })
 }
 
 #[tauri::command]

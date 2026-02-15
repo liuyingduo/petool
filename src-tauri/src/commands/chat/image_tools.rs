@@ -2,7 +2,7 @@ use crate::services::llm::LlmService;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -95,6 +95,34 @@ fn image_format_to_mime(format: &str) -> Option<&'static str> {
     }
 }
 
+fn resolve_image_source_path(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, String> {
+    if let Ok(resolved) = resolve_workspace_target(workspace_root, raw_path, false) {
+        return Ok(resolved);
+    }
+
+    let app_log_dir = crate::utils::get_app_log_dir().map_err(|e| e.to_string())?;
+    let canonical_log_dir = app_log_dir.canonicalize().map_err(|e| e.to_string())?;
+    let requested = {
+        let candidate = PathBuf::from(raw_path);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            canonical_log_dir.join(candidate)
+        }
+    };
+
+    if !requested.exists() {
+        return Err(format!("Path does not exist: {}", requested.display()));
+    }
+
+    let canonical_requested = requested.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical_requested.starts_with(&canonical_log_dir) {
+        return Err("Path is outside workspace root and app log directory".to_string());
+    }
+
+    Ok(canonical_requested)
+}
+
 pub(super) async fn execute_image_probe(
     arguments: &Value,
     workspace_root: &Path,
@@ -103,7 +131,7 @@ pub(super) async fn execute_image_probe(
         read_u64_argument(arguments, "max_bytes", 512 * 1024).clamp(1_024, 4_194_304) as usize;
 
     let source = if let Some(path) = read_optional_string_argument(arguments, "path") {
-        let resolved = resolve_workspace_target(workspace_root, &path, false)?;
+        let resolved = resolve_image_source_path(workspace_root, &path)?;
         let mut file = fs::File::open(&resolved).map_err(|e| e.to_string())?;
         let mut bytes = vec![0u8; max_bytes];
         let size = file.read(&mut bytes).map_err(|e| e.to_string())?;
@@ -200,7 +228,7 @@ pub(super) async fn execute_image_understand(
     }
 
     let (source_kind, source, image_url, metadata) = if let Some(path_value) = path {
-        let resolved = resolve_workspace_target(workspace_root, &path_value, false)?;
+        let resolved = resolve_image_source_path(workspace_root, &path_value)?;
         let file_metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
         if !file_metadata.is_file() {
             return Err(format!("Not a file: {}", resolved.display()));

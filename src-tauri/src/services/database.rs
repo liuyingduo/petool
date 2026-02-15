@@ -48,7 +48,21 @@ impl Database {
                 installed_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS message_events (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                tool_call_id TEXT,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_message_events_conversation_turn_seq ON message_events(conversation_id, turn_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_message_events_conversation_created ON message_events(conversation_id, created_at);
             "#,
         )
         .execute(&pool)

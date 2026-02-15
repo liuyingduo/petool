@@ -36,3 +36,31 @@ pub enum MessageRole {
     System,
     Tool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineEventType {
+    UserMessage,
+    AssistantReasoning,
+    AssistantText,
+    AssistantToolCall,
+    AssistantToolResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEvent {
+    pub id: String,
+    pub conversation_id: String,
+    pub turn_id: String,
+    pub seq: i64,
+    pub event_type: TimelineEventType,
+    pub tool_call_id: Option<String>,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationTimeline {
+    pub events: Vec<TimelineEvent>,
+    pub legacy: bool,
+}
