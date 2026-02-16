@@ -190,7 +190,7 @@ const DEFAULT_WEB_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
 const DEFAULT_EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 const DEFAULT_GLM_API_BASE: &str = "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_ARK_API_BASE: &str = "https://ark.cn-beijing.volces.com/api/v3";
-const DEFAULT_MINIMAX_ANTHROPIC_API_BASE: &str = "https://api.minimaxi.com/anthropic";
+const DEFAULT_MINIMAX_OPENAI_API_BASE: &str = "https://api.minimaxi.com/v1";
 const REPEATED_TOOL_GUARD_TEXT: &str = "Detected repeated identical tool calls from the model. Automatic tool loop was stopped. Please provide a more specific target (file/directory) and try again.";
 const STREAM_PAUSED_TEXT: &str = "（已暂停）";
 
@@ -475,12 +475,13 @@ fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, 
             let api_key = first_non_empty(vec![
                 config.minimax_api_key.clone(),
                 env_value("MINIMAX_API_KEY"),
+                env_value("OPENAI_API_KEY"),
                 env_value("ANTHROPIC_API_KEY"),
             ])
             .ok_or_else(|| "MiniMax API key not set".to_string())?;
             Ok(LlmService::new(
                 api_key,
-                Some(DEFAULT_MINIMAX_ANTHROPIC_API_BASE.to_string()),
+                Some(DEFAULT_MINIMAX_OPENAI_API_BASE.to_string()),
             ))
         }
     }
@@ -532,6 +533,7 @@ Use workspace_list_directory only for quick non-recursive inspection of one dire
 Desktop automation policy (UFO-style): \
 Always discover controls before acting: get_desktop_app_info/list_windows -> select_application_window/select_window -> get_app_window_controls_info/get_controls(refresh=true) -> control action by exact id + exact name. \
 Use canonical action args: set_edit_text(text), keyboard_input(keys, control_focus), wheel_mouse_input(wheel_dist), select_application_window(id,name). \
+Browser policy: all browser lifecycle/navigation/page actions must use tool=browser only; never use desktop.launch_application or desktop.close_application for browsers. \
 Use click_on_coordinates only as fallback when the target control is missing from control list."
     } else {
         "Tool selection policy: \
@@ -1125,6 +1127,56 @@ fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeTool>) {
     tool_catalog::collect_core_tools()
 }
 
+fn recover_tool_arguments_candidate(candidate: &str) -> Option<String> {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return Some(String::new());
+    }
+
+    if trimmed.starts_with("```") && trimmed.ends_with("```") {
+        let mut lines = trimmed.lines().collect::<Vec<_>>();
+        if lines.len() >= 2 {
+            lines.remove(0);
+            if lines.last().map(|line| line.trim()) == Some("```") {
+                lines.pop();
+                return Some(lines.join("\n").trim().to_string());
+            }
+        }
+    }
+
+    if trimmed.starts_with("{{") && trimmed.ends_with("}}") && trimmed.len() >= 4 {
+        return Some(trimmed[1..trimmed.len() - 1].trim().to_string());
+    }
+
+    // Recover embedded/concatenated JSON objects such as:
+    //   {}{"action":"start"}
+    //   prefix {"action":"start"} suffix
+    let starts = trimmed
+        .match_indices('{')
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    let ends = trimmed
+        .match_indices('}')
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    for &start in starts.iter().rev() {
+        for &end in ends.iter().rev() {
+            if end <= start {
+                continue;
+            }
+            let sliced = trimmed[start..=end].trim();
+            if sliced.is_empty() || sliced == trimmed {
+                continue;
+            }
+            if let Ok(Value::Object(_)) = serde_json::from_str::<Value>(sliced) {
+                return Some(sliced.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 fn parse_tool_arguments(raw: &str) -> Value {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1132,7 +1184,7 @@ fn parse_tool_arguments(raw: &str) -> Value {
     }
 
     let mut candidate = trimmed.to_string();
-    for _ in 0..3 {
+    for _ in 0..6 {
         match serde_json::from_str::<Value>(&candidate) {
             Ok(Value::Object(map)) => return Value::Object(map),
             Ok(Value::String(inner)) => {
@@ -1144,10 +1196,24 @@ fn parse_tool_arguments(raw: &str) -> Value {
                     break;
                 }
                 candidate = inner_trimmed.to_string();
+                continue;
             }
-            Ok(_) => break,
-            Err(_) => break,
+            Ok(_) => {}
+            Err(_) => {}
         }
+
+        if let Some(recovered) = recover_tool_arguments_candidate(&candidate) {
+            if recovered.is_empty() {
+                return json!({});
+            }
+            if recovered == candidate {
+                break;
+            }
+            candidate = recovered;
+            continue;
+        }
+
+        break;
     }
 
     json!({

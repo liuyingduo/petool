@@ -513,7 +513,8 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions.".to_string(),
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions."
+            .to_string(),
         json!({
             "type": "object",
             "properties": {
@@ -557,6 +558,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
          2) select_application_window or select_window, \
          3) get_app_window_controls_info or get_controls (refresh=true), \
          4) control actions (click_input/set_edit_text/keyboard_input/wheel_mouse_input/texts) using exact control id + exact name. \
+         Browser operations are excluded and must use the browser tool. \
          Use click_on_coordinates only when target control is missing from control list.".to_string(),
         json!({
             "type": "object",
@@ -567,7 +569,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
                 },
                 "params": {
                     "type": "object",
-                    "description": "Action-specific parameters. UFO-style canonical args: select_application_window(id,name), set_edit_text(id,name,text), keyboard_input(id,name,keys,control_focus), wheel_mouse_input(id,name,wheel_dist), click_input(id,name,button,double), texts(id,name). For control actions use exact id + exact name. For control/window collectors pass field_list (string[]). For launch_application use one of: command | application_path | app_path | executable | app_name | bash_command. Optional: args (string[]), cwd. Compatibility: select_application_window also accepts window_id/hwnd; keyboard_input also accepts text as alias of keys."
+                    "description": "Action-specific parameters. UFO-style canonical args: select_application_window(id,name), set_edit_text(id,name,text), keyboard_input(id,name,keys,control_focus), wheel_mouse_input(id,name,wheel_dist), click_input(id,name,button,double), texts(id,name). For control actions use exact id + exact name. For control/window collectors pass field_list (string[]). For launch_application use one of: command | application_path | app_path | executable | app_name | bash_command, but only for non-browser apps. Browser launch/navigation is forbidden here and must use tool=browser. Optional: args (string[]), cwd. Compatibility: select_application_window also accepts window_id/hwnd; keyboard_input also accepts text as alias of keys."
                 }
             },
             "required": ["action"]

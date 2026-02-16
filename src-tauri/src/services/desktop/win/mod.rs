@@ -98,6 +98,87 @@ fn read_keyboard_sequence(params: &Value) -> (String, Option<String>) {
 }
 
 #[cfg(target_os = "windows")]
+fn looks_like_browser_target(raw: &str) -> bool {
+    let normalized = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let leaf = normalized
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(normalized.as_str())
+        .trim_matches('"')
+        .trim_matches('\'');
+    let leaf_no_ext = leaf.strip_suffix(".exe").unwrap_or(leaf);
+    if matches!(
+        leaf_no_ext,
+        "chrome"
+            | "msedge"
+            | "firefox"
+            | "brave"
+            | "opera"
+            | "iexplore"
+            | "microsoftedge"
+            | "microsoft-edge"
+            | "edge"
+            | "browser"
+    ) {
+        return true;
+    }
+
+    [
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "brave.exe",
+        "opera.exe",
+        "iexplore.exe",
+        "microsoft-edge:",
+        "start chrome",
+        "start msedge",
+        "start firefox",
+        "start brave",
+        "start opera",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+#[cfg(target_os = "windows")]
+fn is_browser_launch_request(params: &Value) -> bool {
+    for key in [
+        "command",
+        "application_path",
+        "app_path",
+        "executable",
+        "app_name",
+        "bash_command",
+    ] {
+        if let Some(value) = read_optional_string(params, key) {
+            if looks_like_browser_target(&value) {
+                return true;
+            }
+        }
+    }
+
+    params
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .any(looks_like_browser_target)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
 pub(super) fn read_bool(params: &Value, key: &str, default_value: bool) -> bool {
     params
         .get(key)
@@ -529,6 +610,12 @@ pub(super) async fn execute_action(
             Ok(tree)
         }
         "launch_application" => {
+            if is_browser_launch_request(params) {
+                return Err(
+                    "Browser operations must use tool=browser only. Use browser action=start/open/navigate instead of desktop.launch_application."
+                        .to_string(),
+                );
+            }
             let bash_command = read_optional_string(params, "bash_command");
             let command = read_optional_string(params, "command")
                 .or_else(|| read_optional_string(params, "application_path"))

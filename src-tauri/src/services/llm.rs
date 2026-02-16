@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Result};
-use reqwest::Client;
+use async_openai::{
+    config::OpenAIConfig, traits::RequestOptionsBuilder, Client as OpenAiClient,
+};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -57,8 +60,8 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ChatTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_stream: Option<bool>,
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub tool_stream: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +71,46 @@ pub struct ChatResponse {
     pub created: u64,
     pub model: String,
     pub choices: Vec<Choice>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct OpenAiCompatStreamResponse {
+    #[serde(default)]
+    choices: Vec<OpenAiCompatStreamChoice>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct OpenAiCompatStreamChoice {
+    #[serde(default)]
+    delta: OpenAiCompatStreamDelta,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct OpenAiCompatStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiCompatToolCallChunk>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct OpenAiCompatToolCallChunk {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<OpenAiCompatFunctionCallChunk>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct OpenAiCompatFunctionCallChunk {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,23 +161,42 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
     if chunk.is_empty() {
         return;
     }
+    let chunk_trimmed = chunk.trim();
     if base.is_empty() {
-        base.push_str(chunk);
+        base.push_str(chunk_trimmed);
         return;
     }
 
-    // Tool arguments are JSON-like payloads. Avoid ambiguous overlap-dedupe because it can
-    // swallow real characters at chunk boundaries (for example "...271" + "19...").
-    // Keep only two safe rules: ignore exact repeats and accept full snapshots.
-    if chunk == base.as_str() {
-        return;
+    // Recover malformed concatenated objects from a single provider chunk, e.g.:
+    //   {}{"action":"start"}
+    if chunk_trimmed.contains("}{") {
+        if let Some(start) = chunk_trimmed.rfind('{') {
+            let tail = chunk_trimmed[start..].trim();
+            if tail.starts_with('{') && serde_json::from_str::<Value>(tail).is_ok() {
+                *base = tail.to_string();
+                return;
+            }
+        }
     }
-    if chunk.starts_with(base.as_str()) {
-        *base = chunk.to_string();
+
+    // Some providers stream partial_json as full snapshots at each delta.
+    // If the incoming chunk is already a valid JSON object, prefer replacing
+    // current buffer to avoid corrupt concatenation like "}{".
+    if chunk_trimmed.starts_with('{') && serde_json::from_str::<Value>(chunk_trimmed).is_ok() {
+        *base = chunk_trimmed.to_string();
         return;
     }
 
-    base.push_str(chunk);
+    // Keep safe dedupe rules for incremental fragments.
+    if chunk_trimmed == base.as_str() {
+        return;
+    }
+    if chunk_trimmed.starts_with(base.as_str()) {
+        *base = chunk_trimmed.to_string();
+        return;
+    }
+
+    base.push_str(chunk_trimmed);
 }
 
 fn extract_assistant_content_text(content: &Value) -> Option<String> {
@@ -164,18 +226,70 @@ fn extract_assistant_content_text(content: &Value) -> Option<String> {
     }
 }
 
+fn is_system_role(role: &str) -> bool {
+    role.trim().eq_ignore_ascii_case("system")
+}
+
+fn is_minimax_model(model: &str) -> bool {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("minimax-")
+}
+
+fn merge_leading_system_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let leading_system_count = messages
+        .iter()
+        .take_while(|message| is_system_role(&message.role))
+        .count();
+    if leading_system_count <= 1 {
+        return messages;
+    }
+
+    let mut merged_parts: Vec<String> = Vec::new();
+    for message in messages.iter().take(leading_system_count) {
+        if let Some(content) = message.content.as_deref() {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                merged_parts.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let mut normalized: Vec<ChatMessage> = Vec::new();
+    if !merged_parts.is_empty() {
+        normalized.push(ChatMessage {
+            role: "system".to_string(),
+            content: Some(merged_parts.join("\n\n")),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+        });
+    }
+
+    normalized.extend(messages.into_iter().skip(leading_system_count));
+    normalized
+}
+
 pub struct LlmService {
-    client: Client,
+    client: OpenAiClient<OpenAIConfig>,
     api_key: String,
     api_base: String,
 }
 
 impl LlmService {
     pub fn new(api_key: String, api_base: Option<String>) -> Self {
+        let resolved_api_base = api_base
+            .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+            .trim_end_matches('/')
+            .to_string();
+        let config = OpenAIConfig::new()
+            .with_api_key(api_key.clone())
+            .with_api_base(resolved_api_base.clone());
         Self {
-            client: Client::new(),
+            client: OpenAiClient::with_config(config),
             api_key,
-            api_base: api_base.unwrap_or_else(|| DEFAULT_API_BASE.to_string()),
+            api_base: resolved_api_base,
         }
     }
 
@@ -196,7 +310,11 @@ impl LlmService {
         model: &str,
         messages: Vec<ChatMessage>,
     ) -> Result<String> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+        let messages = if is_minimax_model(model) {
+            merge_leading_system_messages(messages)
+        } else {
+            messages
+        };
 
         let request = ChatRequest {
             model: model.to_string(),
@@ -204,23 +322,21 @@ impl LlmService {
             stream: false,
             tools: None,
             tool_choice: None,
-            tool_stream: None,
+            // tool_stream: None,
         };
 
-        let response = self
+        let chat_response: ChatResponse = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("API error: {}", error));
-        }
-
-        let chat_response: ChatResponse = response.json().await?;
+            .chat()
+            .create_byot(request)
+            .await
+            .map_err(|e| {
+                eprintln!(
+                    "[llm] non-stream request failed: model={}, error={}",
+                    model, e
+                );
+                anyhow!("API error: {}", e)
+            })?;
         let choice = chat_response
             .choices
             .first()
@@ -230,24 +346,22 @@ impl LlmService {
     }
 
     async fn chat_anthropic(&self, model: &str, messages: Vec<ChatMessage>) -> Result<String> {
-        let url = format!("{}/v1/messages", self.api_base.trim_end_matches('/'));
         let request = self.build_anthropic_request(model, messages, None, false)?;
 
-        let response = self
+        let chat_api = self
             .client
-            .post(&url)
+            .chat()
+            .path("/v1/messages")
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?
             .header("x-api-key", &self.api_key)
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .json(&request)
-            .send()
-            .await?;
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?;
 
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Anthropic API error: {}", error));
-        }
-
-        let response_json: Value = response.json().await?;
+        let response_json: Value = chat_api
+            .create_byot(request)
+            .await
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?;
         let content_blocks = response_json
             .get("content")
             .and_then(Value::as_array)
@@ -289,118 +403,113 @@ impl LlmService {
         mut callback: impl FnMut(LlmStreamEvent) + Send + 'a,
         should_cancel: impl Fn() -> bool + Send + Sync + 'a,
     ) -> Result<LlmStreamResult> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-
+        let messages = if is_minimax_model(model) {
+            merge_leading_system_messages(messages)
+        } else {
+            messages
+        };
         let request = ChatRequest {
             model: model.to_string(),
             messages,
             stream: true,
+            tool_choice: if is_minimax_model(model) {
+                None
+            } else {
+                tools.as_ref().map(|_| "auto".to_string())
+            },
             tools: tools.clone(),
-            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
-            tool_stream: tools.as_ref().map(|_| true),
+            // Some OpenAI-compatible providers (including MiniMax /v1) reject tool_stream.
+            // tool_stream: None,
+        };
+        let primary_stream_result = self
+            .client
+            .chat()
+            .create_stream_byot(request.clone())
+            .await;
+        let mut stream = match primary_stream_result {
+            Ok(stream) => stream,
+            Err(primary_error) => {
+                let error_text = primary_error.to_string();
+                eprintln!(
+                    "[llm] primary stream request failed: model={}, error={}",
+                    model, error_text
+                );
+                let should_retry_without_tools = request.tools.is_some()
+                    && error_text
+                        .to_ascii_lowercase()
+                        .contains("invalid chat setting");
+
+                if !should_retry_without_tools {
+                    return Err(anyhow!("API error: {}", primary_error));
+                }
+
+                let mut fallback_request = request;
+                fallback_request.tools = None;
+                fallback_request.tool_choice = None;
+                self.client
+                    .chat()
+                    .create_stream_byot(fallback_request)
+                    .await
+                    .map_err(|fallback_error| {
+                        eprintln!(
+                            "[llm] fallback stream request without tools failed: model={}, error={}",
+                            model, fallback_error
+                        );
+                        anyhow!(
+                            "API error: {}; fallback without tools failed: {}",
+                            error_text,
+                            fallback_error
+                        )
+                    })?
+            }
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("API error: {}", error));
-        }
-
-        let mut stream = response.bytes_stream();
-        use futures_util::StreamExt;
-
-        let mut buffer = String::new();
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
         let mut cancelled = false;
-        let mut done = false;
 
         while let Some(item) = stream.next().await {
             if should_cancel() {
                 cancelled = true;
                 break;
             }
-            let chunk = item?;
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
+            let value: OpenAiCompatStreamResponse =
+                item.map_err(|e| anyhow!("API error: {}", e))?;
 
-            while let Some(pos) = buffer.find('\n') {
+            for choice in value.choices {
                 if should_cancel() {
                     cancelled = true;
                     break;
                 }
-                let line = buffer[..pos].trim_end_matches('\r').to_string();
-                buffer = buffer[pos + 1..].to_string();
 
-                if !line.starts_with("data: ") {
-                    continue;
-                }
-
-                let data = &line[6..];
-                if data == "[DONE]" {
-                    done = true;
-                    break;
-                }
-
-                let value: serde_json::Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                if let Some(chunk_text) = value
-                    .pointer("/choices/0/delta/content")
-                    .and_then(|v| v.as_str())
-                {
+                if let Some(chunk_text) = choice.delta.content {
                     let part = chunk_text.to_string();
                     content.push_str(&part);
                     callback(LlmStreamEvent::Content(part));
                 }
 
-                if let Some(reasoning_text) = value
-                    .pointer("/choices/0/delta/reasoning_content")
-                    .and_then(|v| v.as_str())
-                {
-                    reasoning.push_str(reasoning_text);
-                    callback(LlmStreamEvent::Reasoning(reasoning_text.to_string()));
+                if let Some(reasoning_text) = choice.delta.reasoning_content {
+                    reasoning.push_str(&reasoning_text);
+                    callback(LlmStreamEvent::Reasoning(reasoning_text));
                 }
 
-                if let Some(tool_calls) = value
-                    .pointer("/choices/0/delta/tool_calls")
-                    .and_then(|v| v.as_array())
-                {
+                if let Some(tool_calls) = choice.delta.tool_calls {
                     for item in tool_calls {
-                        let index =
-                            item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let index = item.index;
                         let entry = tool_call_builders.entry(index).or_default();
 
-                        let id = item
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                        let id = item.id;
                         if let Some(ref value) = id {
                             entry.id = Some(value.clone());
                         }
 
-                        let name = item
-                            .pointer("/function/name")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                        let name = item.function.as_ref().and_then(|v| v.name.clone());
                         if let Some(ref value) = name {
                             entry.name = Some(value.clone());
                         }
 
-                        let arguments_chunk = item
-                            .pointer("/function/arguments")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                        let arguments_chunk = item.function.and_then(|v| v.arguments);
                         if let Some(ref value) = arguments_chunk {
                             append_tool_arguments_chunk(&mut entry.arguments, value);
                         }
@@ -414,8 +523,7 @@ impl LlmService {
                     }
                 }
             }
-
-            if cancelled || done {
+            if cancelled {
                 break;
             }
         }
@@ -455,32 +563,26 @@ impl LlmService {
         mut callback: impl FnMut(LlmStreamEvent) + Send + 'a,
         should_cancel: impl Fn() -> bool + Send + Sync + 'a,
     ) -> Result<LlmStreamResult> {
-        use futures_util::StreamExt;
-
-        let url = format!("{}/v1/messages", self.api_base.trim_end_matches('/'));
         let request = self.build_anthropic_request(model, messages, tools.clone(), true)?;
 
-        let response = self
+        let chat_api = self
             .client
-            .post(&url)
+            .chat()
+            .path("/v1/messages")
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?
             .header("x-api-key", &self.api_key)
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .json(&request)
-            .send()
-            .await?;
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?;
 
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Anthropic API error: {}", error));
-        }
-
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut stream = chat_api
+            .create_stream_byot(request)
+            .await
+            .map_err(|e| anyhow!("Anthropic API error: {}", e))?;
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut tool_call_builders: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
         let mut cancelled = false;
-        let mut done = false;
 
         while let Some(item) = stream.next().await {
             if should_cancel() {
@@ -488,119 +590,92 @@ impl LlmService {
                 break;
             }
 
-            let chunk = item?;
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
+            let value: Value = item.map_err(|e| anyhow!("Anthropic API error: {}", e))?;
 
-            while let Some(pos) = buffer.find('\n') {
-                if should_cancel() {
-                    cancelled = true;
-                    break;
+            let event_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            if event_type == "content_block_start" {
+                let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if let Some(block) = value.get("content_block") {
+                    let block_type = block
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if block_type == "tool_use" {
+                        let entry = tool_call_builders.entry(index).or_default();
+                        if let Some(id) = block.get("id").and_then(Value::as_str) {
+                            entry.id = Some(id.to_string());
+                        }
+                        if let Some(name) = block.get("name").and_then(Value::as_str) {
+                            entry.name = Some(name.to_string());
+                        }
+                        if let Some(input) = block.get("input") {
+                            if !input.is_null() {
+                                let raw =
+                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                                append_tool_arguments_chunk(&mut entry.arguments, &raw);
+                                callback(LlmStreamEvent::ToolCallDelta(ToolCallDelta {
+                                    index,
+                                    id: entry.id.clone(),
+                                    name: entry.name.clone(),
+                                    arguments_chunk: Some(raw),
+                                }));
+                            }
+                        }
+                    }
                 }
-                let line = buffer[..pos].trim_end_matches('\r').to_string();
-                buffer = buffer[pos + 1..].to_string();
+                continue;
+            }
 
-                if !line.starts_with("data: ") {
+            if event_type == "content_block_delta" {
+                let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(delta) = value.get("delta") else {
                     continue;
-                }
-
-                let data = &line[6..];
-                if data == "[DONE]" {
-                    done = true;
-                    break;
-                }
-
-                let value: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
                 };
-
-                let event_type = value
+                let delta_type = delta
                     .get("type")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
 
-                if event_type == "content_block_start" {
-                    let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                    if let Some(block) = value.get("content_block") {
-                        let block_type = block
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        if block_type == "tool_use" {
-                            let entry = tool_call_builders.entry(index).or_default();
-                            if let Some(id) = block.get("id").and_then(Value::as_str) {
-                                entry.id = Some(id.to_string());
-                            }
-                            if let Some(name) = block.get("name").and_then(Value::as_str) {
-                                entry.name = Some(name.to_string());
-                            }
-                            if let Some(input) = block.get("input") {
-                                if !input.is_null() {
-                                    let raw = serde_json::to_string(input)
-                                        .unwrap_or_else(|_| "{}".to_string());
-                                    append_tool_arguments_chunk(&mut entry.arguments, &raw);
-                                    callback(LlmStreamEvent::ToolCallDelta(ToolCallDelta {
-                                        index,
-                                        id: entry.id.clone(),
-                                        name: entry.name.clone(),
-                                        arguments_chunk: Some(raw),
-                                    }));
-                                }
-                            }
-                        }
+                if delta_type == "text_delta" {
+                    if let Some(part) = delta.get("text").and_then(Value::as_str) {
+                        content.push_str(part);
+                        callback(LlmStreamEvent::Content(part.to_string()));
                     }
                     continue;
                 }
 
-                if event_type == "content_block_delta" {
-                    let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                    let Some(delta) = value.get("delta") else {
-                        continue;
-                    };
-                    let delta_type = delta
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-
-                    if delta_type == "text_delta" {
-                        if let Some(part) = delta.get("text").and_then(Value::as_str) {
-                            content.push_str(part);
-                            callback(LlmStreamEvent::Content(part.to_string()));
-                        }
-                        continue;
-                    }
-
-                    if delta_type == "thinking_delta" {
-                        if let Some(part) = delta.get("thinking").and_then(Value::as_str) {
-                            reasoning.push_str(part);
-                            callback(LlmStreamEvent::Reasoning(part.to_string()));
-                        }
-                        continue;
-                    }
-
-                    if delta_type == "input_json_delta" {
-                        if let Some(part) = delta.get("partial_json").and_then(Value::as_str) {
-                            let entry = tool_call_builders.entry(index).or_default();
-                            append_tool_arguments_chunk(&mut entry.arguments, part);
-                            callback(LlmStreamEvent::ToolCallDelta(ToolCallDelta {
-                                index,
-                                id: entry.id.clone(),
-                                name: entry.name.clone(),
-                                arguments_chunk: Some(part.to_string()),
-                            }));
-                        }
+                if delta_type == "thinking_delta" {
+                    if let Some(part) = delta.get("thinking").and_then(Value::as_str) {
+                        reasoning.push_str(part);
+                        callback(LlmStreamEvent::Reasoning(part.to_string()));
                     }
                     continue;
                 }
 
-                if event_type == "message_stop" {
-                    done = true;
-                    break;
+                if delta_type == "input_json_delta" {
+                    if let Some(part) = delta.get("partial_json").and_then(Value::as_str) {
+                        let entry = tool_call_builders.entry(index).or_default();
+                        append_tool_arguments_chunk(&mut entry.arguments, part);
+                        callback(LlmStreamEvent::ToolCallDelta(ToolCallDelta {
+                            index,
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            arguments_chunk: Some(part.to_string()),
+                        }));
+                    }
                 }
+                continue;
             }
 
-            if cancelled || done {
+            if event_type == "message_stop" {
+                break;
+            }
+
+            if cancelled {
                 break;
             }
         }
@@ -798,8 +873,6 @@ impl LlmService {
         image_url: &str,
         enable_thinking: bool,
     ) -> Result<String> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-
         let mut request = json!({
             "model": model,
             "stream": false,
@@ -828,20 +901,12 @@ impl LlmService {
             });
         }
 
-        let response = self
+        let response_json: Value = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("API error: {}", error));
-        }
-
-        let response_json: Value = response.json().await?;
+            .chat()
+            .create_byot(request)
+            .await
+            .map_err(|e| anyhow!("API error: {}", e))?;
         let content = response_json
             .pointer("/choices/0/message/content")
             .and_then(extract_assistant_content_text)
@@ -857,7 +922,6 @@ impl LlmService {
         size: &str,
         watermark: bool,
     ) -> Result<String> {
-        let url = format!("{}/images/generations", self.api_base.trim_end_matches('/'));
         let request = json!({
             "model": model,
             "prompt": prompt,
@@ -868,20 +932,12 @@ impl LlmService {
             }
         });
 
-        let response = self
+        let response_json: Value = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Image API error: {}", error));
-        }
-
-        let response_json: Value = response.json().await?;
+            .images()
+            .generate_byot(request)
+            .await
+            .map_err(|e| anyhow!("Image API error: {}", e))?;
         let image_url = response_json
             .pointer("/data/0/url")
             .and_then(Value::as_str)
@@ -891,3 +947,4 @@ impl LlmService {
         Ok(image_url.to_string())
     }
 }
+
