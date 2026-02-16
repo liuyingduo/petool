@@ -123,30 +123,15 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
         return;
     }
 
-    // Tool arguments are JSON-like payloads. Keep merging conservative:
-    // prefer full snapshots, ignore exact repeats, otherwise append by suffix/prefix overlap.
+    // Tool arguments are JSON-like payloads. Avoid ambiguous overlap-dedupe because it can
+    // swallow real characters at chunk boundaries (for example "...271" + "19...").
+    // Keep only two safe rules: ignore exact repeats and accept full snapshots.
     if chunk == base.as_str() {
         return;
     }
     if chunk.starts_with(base.as_str()) {
         *base = chunk.to_string();
         return;
-    }
-
-    // Merge incremental chunks without dropping short tokens (for example `"`).
-    // Only dedupe partial overlaps; do not drop fully-equal trailing chunks like `}`/`}}`.
-    let max_overlap = std::cmp::min(base.len(), chunk.len());
-    for overlap in (1..=max_overlap).rev() {
-        if overlap == chunk.len() {
-            continue;
-        }
-        if !base.is_char_boundary(base.len() - overlap) || !chunk.is_char_boundary(overlap) {
-            continue;
-        }
-        if base[base.len() - overlap..] == chunk[..overlap] {
-            base.push_str(&chunk[overlap..]);
-            return;
-        }
     }
 
     base.push_str(chunk);

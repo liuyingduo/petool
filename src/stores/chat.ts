@@ -373,8 +373,6 @@ export const useChatStore = defineStore('chat', () => {
   function mergeTextChunk(base: string, chunk: string) {
     if (!base) return chunk
     if (!chunk) return base
-    if (chunk === base) return base
-    if (chunk.startsWith(base)) return chunk
     return base + chunk
   }
 
@@ -383,13 +381,6 @@ export const useChatStore = defineStore('chat', () => {
     if (!chunk) return base
     if (chunk === base) return base
     if (chunk.startsWith(base)) return chunk
-
-    const max = Math.min(base.length, chunk.length)
-    for (let overlap = max - 1; overlap >= 1; overlap -= 1) {
-      if (base.slice(base.length - overlap) === chunk.slice(0, overlap)) {
-        return base + chunk.slice(overlap)
-      }
-    }
     return base + chunk
   }
 
