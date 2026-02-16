@@ -26,6 +26,7 @@ export interface Config {
   tool_path_permissions: ToolPathPermissionRule[]
   auto_approve_tool_requests: boolean
   browser: BrowserConfig
+  desktop: DesktopConfig
 }
 
 export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
@@ -70,6 +71,18 @@ export interface BrowserConfig {
   default_act_timeout_ms: number
   operation_timeout_ms: number
   profiles: Record<string, BrowserProfileConfig>
+}
+
+export type DesktopApprovalMode = 'high_risk_only' | 'always_ask' | 'always_allow'
+
+export interface DesktopConfig {
+  enabled: boolean
+  operation_timeout_ms: number
+  control_cache_ttl_ms: number
+  max_controls: number
+  screenshot_dir?: string | null
+  screenshot_keep_count: number
+  approval_mode: DesktopApprovalMode
 }
 
 export const useConfigStore = defineStore('config', () => {
@@ -117,6 +130,15 @@ export const useConfigStore = defineStore('config', () => {
           }
         }
       }
+    },
+    desktop: {
+      enabled: true,
+      operation_timeout_ms: 20000,
+      control_cache_ttl_ms: 120000,
+      max_controls: 800,
+      screenshot_dir: null,
+      screenshot_keep_count: 200,
+      approval_mode: 'high_risk_only'
     }
   })
 

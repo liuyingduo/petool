@@ -295,7 +295,7 @@ export const useChatStore = defineStore('chat', () => {
     if (next.event_type === 'assistant_text' || next.event_type === 'assistant_reasoning') {
       const baseText = typeof base.payload.text === 'string' ? base.payload.text : ''
       const nextText = typeof next.payload.text === 'string' ? next.payload.text : ''
-      base.payload = { ...base.payload, text: mergeChunk(baseText, nextText) }
+      base.payload = { ...base.payload, text: mergeTextChunk(baseText, nextText) }
       base.seq = next.seq
       base.created_at = next.created_at
       return true
@@ -331,7 +331,7 @@ export const useChatStore = defineStore('chat', () => {
         ...nextPayload,
         ...(mergedIndex !== null ? { index: mergedIndex } : {}),
         ...(mergedName ? { name: mergedName } : {}),
-        argumentsChunk: mergeChunk(baseArgs, nextArgs)
+        argumentsChunk: mergeToolArgumentsChunk(baseArgs, nextArgs)
       }
       base.seq = next.seq
       base.created_at = next.created_at
@@ -370,12 +370,19 @@ export const useChatStore = defineStore('chat', () => {
     return 0
   }
 
-  function mergeChunk(base: string, chunk: string) {
+  function mergeTextChunk(base: string, chunk: string) {
     if (!base) return chunk
     if (!chunk) return base
     if (chunk === base) return base
     if (chunk.startsWith(base)) return chunk
-    if (base.endsWith(chunk)) return base
+    return base + chunk
+  }
+
+  function mergeToolArgumentsChunk(base: string, chunk: string) {
+    if (!base) return chunk
+    if (!chunk) return base
+    if (chunk === base) return base
+    if (chunk.startsWith(base)) return chunk
 
     const max = Math.min(base.length, chunk.length)
     for (let overlap = max - 1; overlap >= 1; overlap -= 1) {

@@ -255,6 +255,70 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- Desktop -->
+      <el-tab-pane label="Desktop" name="desktop">
+        <el-form :model="localConfig.desktop" label-width="180px">
+          <el-form-item label="Enable Desktop Tool">
+            <el-switch v-model="localConfig.desktop.enabled" />
+          </el-form-item>
+
+          <el-form-item label="Timeout (ms)">
+            <el-input-number
+              v-model="localConfig.desktop.operation_timeout_ms"
+              :min="1000"
+              :max="120000"
+              :step="1000"
+              style="width: 220px"
+            />
+          </el-form-item>
+
+          <el-form-item label="Control Cache TTL (ms)">
+            <el-input-number
+              v-model="localConfig.desktop.control_cache_ttl_ms"
+              :min="250"
+              :max="600000"
+              :step="250"
+              style="width: 220px"
+            />
+          </el-form-item>
+
+          <el-form-item label="Max Controls">
+            <el-input-number
+              v-model="localConfig.desktop.max_controls"
+              :min="10"
+              :max="10000"
+              :step="10"
+              style="width: 220px"
+            />
+          </el-form-item>
+
+          <el-form-item label="Screenshot Keep Count">
+            <el-input-number
+              v-model="localConfig.desktop.screenshot_keep_count"
+              :min="20"
+              :max="10000"
+              :step="10"
+              style="width: 220px"
+            />
+          </el-form-item>
+
+          <el-form-item label="Approval Mode">
+            <el-select v-model="localConfig.desktop.approval_mode" style="width: 260px">
+              <el-option label="High-Risk Only (Recommended)" value="high_risk_only" />
+              <el-option label="Always Ask" value="always_ask" />
+              <el-option label="Always Allow" value="always_allow" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="Screenshot Directory">
+            <el-input
+              v-model="localConfig.desktop.screenshot_dir"
+              placeholder="Optional. Empty uses app log directory desktop-shots."
+            />
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <!-- MCP Servers -->
       <el-tab-pane label="MCP Servers" name="mcp">
         <div class="mcp-list">
@@ -351,6 +415,7 @@ import { ref, watch, computed } from 'vue'
 import {
   useConfigStore,
   type BrowserConfig,
+  type DesktopConfig,
   type BrowserProfileConfig,
   type Config,
   type McpServerConfig
@@ -404,6 +469,16 @@ const defaultBrowserConfig: BrowserConfig = {
   }
 }
 
+const defaultDesktopConfig: DesktopConfig = {
+  enabled: true,
+  operation_timeout_ms: 20000,
+  control_cache_ttl_ms: 120000,
+  max_controls: 800,
+  screenshot_dir: null,
+  screenshot_keep_count: 200,
+  approval_mode: 'high_risk_only'
+}
+
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
@@ -427,7 +502,8 @@ const defaultConfig: Config = {
   tool_permissions: {},
   tool_path_permissions: [],
   auto_approve_tool_requests: false,
-  browser: deepClone(defaultBrowserConfig)
+  browser: deepClone(defaultBrowserConfig),
+  desktop: deepClone(defaultDesktopConfig)
 }
 
 const localConfig = ref<Config>({
@@ -506,6 +582,52 @@ function ensureBrowserConfig(target: Config) {
   }
 }
 
+function ensureDesktopConfig(target: Config) {
+  if (!target.desktop) {
+    target.desktop = deepClone(defaultDesktopConfig)
+  }
+  if (target.desktop.enabled === undefined) {
+    target.desktop.enabled = defaultDesktopConfig.enabled
+  }
+  if (
+    target.desktop.operation_timeout_ms === undefined ||
+    Number.isNaN(Number(target.desktop.operation_timeout_ms))
+  ) {
+    target.desktop.operation_timeout_ms = defaultDesktopConfig.operation_timeout_ms
+  }
+  target.desktop.operation_timeout_ms = Math.max(
+    1000,
+    Math.min(120000, Math.trunc(target.desktop.operation_timeout_ms))
+  )
+  if (
+    target.desktop.control_cache_ttl_ms === undefined ||
+    Number.isNaN(Number(target.desktop.control_cache_ttl_ms))
+  ) {
+    target.desktop.control_cache_ttl_ms = defaultDesktopConfig.control_cache_ttl_ms
+  }
+  target.desktop.control_cache_ttl_ms = Math.max(
+    250,
+    Math.min(600000, Math.trunc(target.desktop.control_cache_ttl_ms))
+  )
+  if (target.desktop.max_controls === undefined || Number.isNaN(Number(target.desktop.max_controls))) {
+    target.desktop.max_controls = defaultDesktopConfig.max_controls
+  }
+  target.desktop.max_controls = Math.max(10, Math.min(10000, Math.trunc(target.desktop.max_controls)))
+  if (target.desktop.screenshot_keep_count === undefined || Number.isNaN(Number(target.desktop.screenshot_keep_count))) {
+    target.desktop.screenshot_keep_count = defaultDesktopConfig.screenshot_keep_count
+  }
+  target.desktop.screenshot_keep_count = Math.max(
+    20,
+    Math.min(10000, Math.trunc(target.desktop.screenshot_keep_count))
+  )
+  if (!['high_risk_only', 'always_ask', 'always_allow'].includes(target.desktop.approval_mode)) {
+    target.desktop.approval_mode = defaultDesktopConfig.approval_mode
+  }
+  if (target.desktop.screenshot_dir === undefined) {
+    target.desktop.screenshot_dir = null
+  }
+}
+
 const browserProfileNames = computed(() => {
   const browser = localConfig.value.browser
   if (!browser?.profiles) return []
@@ -544,10 +666,12 @@ watch(() => props.modelValue, (val) => {
       ...defaultConfig,
       ...currentConfig,
       mcp_servers: [...(currentConfig.mcp_servers ?? [])],
-      browser: deepClone(currentConfig.browser ?? defaultBrowserConfig)
+      browser: deepClone(currentConfig.browser ?? defaultBrowserConfig),
+      desktop: deepClone(currentConfig.desktop ?? defaultDesktopConfig)
     }
     localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
+    ensureDesktopConfig(localConfig.value)
   }
 })
 
@@ -567,6 +691,7 @@ async function handleSave() {
   try {
     localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
+    ensureDesktopConfig(localConfig.value)
     await configStore.saveConfig(localConfig.value)
     ElMessage.success('Settings saved successfully')
     dialogVisible.value = false

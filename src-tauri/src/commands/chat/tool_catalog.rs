@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::{
     ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL, BROWSER_TOOL,
-    CORE_BATCH_TOOL, CORE_TASK_TOOL, IMAGE_PROBE_TOOL, IMAGE_UNDERSTAND_TOOL,
+    CORE_BATCH_TOOL, CORE_TASK_TOOL, DESKTOP_TOOL, IMAGE_PROBE_TOOL, IMAGE_UNDERSTAND_TOOL,
     SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL, SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL,
     SKILL_DISCOVER_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL,
     TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL,
@@ -544,6 +544,29 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
             "required": ["url"]
         }),
         RuntimeTool::BrowserNavigate,
+    );
+
+    #[cfg(target_os = "windows")]
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        DESKTOP_TOOL,
+        "Control Windows desktop GUI and Office apps via a single action-style interface (window listing/selection, control query, click/type/drag/scroll/keyboard, screenshots, and Word/Excel/PPT COM actions).".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "status|list_windows|select_window|get_window_info|get_controls|get_ui_tree|capture_desktop_screenshot|capture_window_screenshot|get_control_texts|wait|launch_application|close_application|click_input|click_on_coordinates|drag_on_coordinates|set_edit_text|keyboard_input|wheel_mouse_input|word_get_doc_info|word_insert_text|word_insert_table|word_save_as|excel_get_workbook_info|excel_set_cell|excel_set_range|excel_save_as|ppt_get_presentation_info|ppt_add_slide|ppt_set_text|ppt_save_as"
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Action-specific parameters. For launch_application use one of: command | application_path | app_path | executable | app_name | bash_command. Optional: args (string[]), cwd."
+                }
+            },
+            "required": ["action"]
+        }),
+        RuntimeTool::Desktop,
     );
 
     register_runtime_tool(

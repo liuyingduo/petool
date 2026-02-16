@@ -65,6 +65,26 @@ fn default_browser_default_act_timeout_ms() -> u64 {
     1_400
 }
 
+fn default_desktop_enabled() -> bool {
+    cfg!(target_os = "windows")
+}
+
+fn default_desktop_operation_timeout_ms() -> u64 {
+    20_000
+}
+
+fn default_desktop_control_cache_ttl_ms() -> u64 {
+    120_000
+}
+
+fn default_desktop_max_controls() -> usize {
+    800
+}
+
+fn default_desktop_screenshot_keep_count() -> usize {
+    200
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: Option<String>,
@@ -106,6 +126,8 @@ pub struct Config {
     pub auto_approve_tool_requests: bool,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub desktop: DesktopConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +164,52 @@ pub enum McpTransport {
 pub enum BrowserEngine {
     Chrome,
     Chromium,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopApprovalMode {
+    HighRiskOnly,
+    AlwaysAsk,
+    AlwaysAllow,
+}
+
+impl Default for DesktopApprovalMode {
+    fn default() -> Self {
+        Self::HighRiskOnly
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopConfig {
+    #[serde(default = "default_desktop_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_desktop_operation_timeout_ms")]
+    pub operation_timeout_ms: u64,
+    #[serde(default = "default_desktop_control_cache_ttl_ms")]
+    pub control_cache_ttl_ms: u64,
+    #[serde(default = "default_desktop_max_controls")]
+    pub max_controls: usize,
+    #[serde(default)]
+    pub screenshot_dir: Option<String>,
+    #[serde(default = "default_desktop_screenshot_keep_count")]
+    pub screenshot_keep_count: usize,
+    #[serde(default)]
+    pub approval_mode: DesktopApprovalMode,
+}
+
+impl Default for DesktopConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_desktop_enabled(),
+            operation_timeout_ms: default_desktop_operation_timeout_ms(),
+            control_cache_ttl_ms: default_desktop_control_cache_ttl_ms(),
+            max_controls: default_desktop_max_controls(),
+            screenshot_dir: None,
+            screenshot_keep_count: default_desktop_screenshot_keep_count(),
+            approval_mode: DesktopApprovalMode::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +333,7 @@ impl Default for Config {
             tool_path_permissions: Vec::new(),
             auto_approve_tool_requests: false,
             browser: BrowserConfig::default(),
+            desktop: DesktopConfig::default(),
         }
     }
 }
@@ -298,5 +367,13 @@ mod tests {
         assert_eq!(profile.color, "#FF6A00");
         assert_eq!(profile.viewport.width, 1280);
         assert_eq!(profile.viewport.height, 800);
+        assert_eq!(config.desktop.operation_timeout_ms, 20_000);
+        assert_eq!(config.desktop.control_cache_ttl_ms, 120_000);
+        assert_eq!(config.desktop.max_controls, 800);
+        assert_eq!(config.desktop.screenshot_keep_count, 200);
+        assert_eq!(
+            config.desktop.approval_mode,
+            DesktopApprovalMode::HighRiskOnly
+        );
     }
 }

@@ -1,7 +1,10 @@
 use crate::commands::mcp::McpState;
 use crate::commands::skills::SkillManagerState;
 use crate::models::chat::*;
-use crate::models::config::{Config, McpTransport, ToolPathPermissionRule, ToolPermissionAction};
+use crate::models::config::{
+    Config, DesktopApprovalMode, McpTransport, ToolPathPermissionRule, ToolPermissionAction,
+};
+use crate::services::desktop::{self, types::DesktopToolRequest};
 use crate::services::llm::{
     ChatMessage, ChatTool, ChatToolCall, ChatToolFunction, LlmService, LlmStreamEvent,
     LlmStreamResult,
@@ -173,6 +176,7 @@ const WEB_FETCH_TOOL: &str = "web_fetch";
 const WEB_SEARCH_TOOL: &str = "web_search";
 const BROWSER_TOOL: &str = "browser";
 const BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
+const DESKTOP_TOOL: &str = "desktop";
 const IMAGE_PROBE_TOOL: &str = "image_probe";
 const IMAGE_UNDERSTAND_TOOL: &str = "image_understand";
 const SESSIONS_LIST_TOOL: &str = "sessions_list";
@@ -222,6 +226,7 @@ enum RuntimeTool {
     WebSearch,
     Browser,
     BrowserNavigate,
+    Desktop,
     ImageProbe,
     ImageUnderstand,
     SessionsList,
@@ -433,7 +438,10 @@ fn env_value(name: &str) -> Option<String> {
 }
 
 fn first_non_empty(values: Vec<Option<String>>) -> Option<String> {
-    values.into_iter().flatten().find(|value| !value.trim().is_empty())
+    values
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
 }
 
 fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, String> {
@@ -761,7 +769,9 @@ async fn run_stream_round(
 
                     let resolved_tool_call_id = stream_tool_call_ids_by_index
                         .entry(delta.index)
-                        .or_insert_with(|| format!("{}_tool_call_{}", turn_id_for_stream, delta.index))
+                        .or_insert_with(|| {
+                            format!("{}_tool_call_{}", turn_id_for_stream, delta.index)
+                        })
                         .clone();
                     let resolved_name = stream_tool_call_names_by_index.get(&delta.index).cloned();
 
@@ -929,6 +939,12 @@ async fn resolve_tool_execution_decision(
         config,
         &tool_call.function.name,
         extract_tool_path_argument(parsed_arguments).as_deref(),
+    );
+    let configured_action = resolve_desktop_permission_action(
+        config,
+        &tool_call.function.name,
+        parsed_arguments,
+        configured_action,
     );
 
     if config.auto_approve_tool_requests && configured_action != ToolPermissionAction::Deny {
@@ -1306,10 +1322,121 @@ fn resolve_tool_permission_action(
     decision
 }
 
+fn resolve_desktop_permission_action(
+    config: &Config,
+    tool_name: &str,
+    parsed_arguments: &Value,
+    fallback: ToolPermissionAction,
+) -> ToolPermissionAction {
+    if tool_name != DESKTOP_TOOL {
+        return fallback;
+    }
+    if fallback != ToolPermissionAction::Ask {
+        return fallback;
+    }
+
+    let Some(action) = desktop::action_from_arguments(parsed_arguments) else {
+        return ToolPermissionAction::Ask;
+    };
+
+    match config.desktop.approval_mode {
+        DesktopApprovalMode::AlwaysAllow => ToolPermissionAction::Allow,
+        DesktopApprovalMode::AlwaysAsk => ToolPermissionAction::Ask,
+        DesktopApprovalMode::HighRiskOnly => {
+            if desktop::is_high_risk_action(&action) {
+                ToolPermissionAction::Ask
+            } else {
+                ToolPermissionAction::Allow
+            }
+        }
+    }
+}
+
 fn extract_tool_path_argument(arguments: &Value) -> Option<String> {
     read_optional_string_argument(arguments, "path")
+        .or_else(|| read_optional_string_argument(arguments, "application_path"))
+        .or_else(|| read_optional_string_argument(arguments, "app_path"))
+        .or_else(|| read_optional_string_argument(arguments, "executable"))
         .or_else(|| read_optional_string_argument(arguments, "cwd"))
         .or_else(|| read_optional_string_argument(arguments, "directory"))
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("application_path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("app_path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("executable")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
+        .or_else(|| {
+            arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| {
+                    params
+                        .get("directory")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        })
 }
 
 fn should_auto_allow_batch_tool(tool_name: &str) -> bool {
@@ -2317,6 +2444,25 @@ async fn execute_browser(arguments: &Value) -> Result<Value, String> {
 async fn execute_browser_navigate(arguments: &Value) -> Result<Value, String> {
     browser_tools::execute_browser_navigate_compat(arguments).await
 }
+
+async fn execute_desktop(
+    arguments: &Value,
+    conversation_id: &str,
+    config: &Config,
+) -> Result<Value, String> {
+    let action = read_string_argument(arguments, "action")?;
+    let params = arguments
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if !params.is_object() {
+        return Err("'params' must be an object".to_string());
+    }
+
+    let request = DesktopToolRequest { action, params };
+    desktop::execute_desktop_request(conversation_id, &request, &config.desktop).await
+}
+
 async fn execute_image_probe(arguments: &Value, workspace_root: &Path) -> Result<Value, String> {
     image_tools::execute_image_probe(arguments, workspace_root).await
 }
@@ -2832,6 +2978,7 @@ async fn execute_runtime_tool(
         RuntimeTool::WebSearch => execute_web_search(arguments).await,
         RuntimeTool::Browser => execute_browser(arguments).await,
         RuntimeTool::BrowserNavigate => execute_browser_navigate(arguments).await,
+        RuntimeTool::Desktop => execute_desktop(arguments, conversation_id, config).await,
         RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
         RuntimeTool::ImageUnderstand => {
             let image_understand_model = config.image_understand_model.trim().to_string();
@@ -3815,7 +3962,16 @@ pub async fn get_conversation_timeline(
     let mut turn_number: i64 = 0;
     let mut current_turn_id = "legacy-turn-0".to_string();
 
-    for (message_id, role_raw, content, created_at_raw, event_conversation_id, tool_calls_raw, reasoning_raw) in rows {
+    for (
+        message_id,
+        role_raw,
+        content,
+        created_at_raw,
+        event_conversation_id,
+        tool_calls_raw,
+        reasoning_raw,
+    ) in rows
+    {
         let created_at = created_at_raw.parse().unwrap_or_else(|_| Utc::now());
         match role_raw.as_str() {
             "user" => {
@@ -3839,10 +3995,7 @@ pub async fn get_conversation_timeline(
                     current_turn_id = "legacy-turn-1".to_string();
                 }
 
-                let reasoning = reasoning_raw
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                let reasoning = reasoning_raw.unwrap_or_default().trim().to_string();
                 if !reasoning.is_empty() {
                     seq += 1;
                     events.push(TimelineEvent {
@@ -3933,7 +4086,12 @@ pub async fn get_conversation_timeline(
                     .unwrap_or("tool");
                 let error = serde_json::from_str::<Value>(&content)
                     .ok()
-                    .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string));
+                    .and_then(|value| {
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
 
                 seq += 1;
                 events.push(TimelineEvent {

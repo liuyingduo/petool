@@ -771,6 +771,33 @@ function summarizeToolAction(toolName: string, args: Record<string, unknown> | n
     if (action) return `浏览器动作: ${action}`
   }
 
+  if (toolName === 'desktop') {
+    const action = pick('action')
+    const windowId = pick('params.window_id', 'params.id', 'params.hwnd')
+    const controlId = pick('params.control_id', 'params.id')
+    const text = pick('params.text')
+    const path = pick('params.path')
+    if (action === 'select_window' && windowId) return `选择窗口: ${windowId}`
+    if (action === 'launch_application') {
+      const command = pick('params.command')
+      if (command) return `启动程序: ${shortenText(command, 56)}`
+    }
+    if (action === 'click_input' && controlId) return `点击控件: ${controlId}`
+    if (action === 'set_edit_text') {
+      if (text) return `输入文本: ${shortenText(text, 40)}`
+      if (controlId) return `设置控件文本: ${controlId}`
+    }
+    if (action === 'keyboard_input') {
+      const keys = pick('params.keys')
+      if (keys) return `键盘输入: ${shortenText(keys, 52)}`
+    }
+    if (action === 'capture_window_screenshot' || action === 'capture_desktop_screenshot') {
+      return '截取桌面截图'
+    }
+    if (action && path) return `${action}: ${shortenPath(path)}`
+    if (action) return `桌面动作: ${action}`
+  }
+
   if (toolName === 'browser_navigate') {
     const url = pick('url')
     if (url) return `打开链接: ${shortenUrl(url)}`
@@ -856,6 +883,16 @@ function summarizeToolResult(toolName: string, result: Record<string, unknown> |
   if (toolName === 'web_search') {
     const query = pick('query', 'q')
     if (query) return `搜索完成: ${shortenText(query, 56)}`
+  }
+
+  if (toolName === 'desktop') {
+    const ok = pick('ok')
+    const path = pick('data.path')
+    if (ok === 'true' && path) return `截图: ${shortenPath(path)}`
+    const selectedWindow = pick('data.selected_window.title')
+    if (selectedWindow) return `窗口: ${shortenText(selectedWindow, 56)}`
+    const error = pick('error')
+    if (error) return `失败: ${shortenText(error, 56)}`
   }
 
   const fallback = firstObjectEntrySummary(result)
@@ -1194,6 +1231,9 @@ const approvalSubtitle = computed(() => {
   if (toolName === 'workspace_run_command') {
     return '为了完成你的请求，我需要运行一条本地命令。'
   }
+  if (toolName === 'desktop') {
+    return '为了操作 Windows 图形界面，我需要执行一个桌面自动化动作。'
+  }
   if (toolName === 'skills_install_from_repo') {
     return '为了解决当前问题，我希望从 ClawHub 下载并安装一个技能。'
   }
@@ -1215,6 +1255,22 @@ const approvalDetailText = computed(() => {
   }
   if (toolName === 'workspace_run_command' && typeof args.command === 'string') {
     return `命令：${truncateMiddle(args.command, 72)}`
+  }
+  if (toolName === 'desktop') {
+    const action = typeof args.action === 'string' ? args.action.trim() : ''
+    const params = args.params && typeof args.params === 'object' ? args.params as Record<string, unknown> : null
+    if (action) {
+      if (params && typeof params.path === 'string') {
+        return `动作：${action} · 路径：${truncateMiddle(params.path, 72)}`
+      }
+      if (params && typeof params.command === 'string') {
+        return `动作：${action} · 命令：${truncateMiddle(params.command, 72)}`
+      }
+      if (params && typeof params.url === 'string') {
+        return `动作：${action} · 目标：${truncateMiddle(params.url, 72)}`
+      }
+      return `动作：${action}`
+    }
   }
   if (toolName === 'skills_install_from_repo') {
     const repoUrlRaw =
