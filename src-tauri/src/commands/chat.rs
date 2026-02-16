@@ -528,7 +528,11 @@ fn prepend_tool_usage_guidance(messages: &mut Vec<ChatMessage>) {
         "Tool selection policy (Windows): \
 Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
 Use concise PowerShell commands for these operations (for example: Get-ChildItem -Recurse -File | Measure-Object, or Get-ChildItem -Recurse | Measure-Object -Property Length -Sum). \
-Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually."
+Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually. \
+Desktop automation policy (UFO-style): \
+Always discover controls before acting: get_desktop_app_info/list_windows -> select_application_window/select_window -> get_app_window_controls_info/get_controls(refresh=true) -> control action by exact id + exact name. \
+Use canonical action args: set_edit_text(text), keyboard_input(keys, control_focus), wheel_mouse_input(wheel_dist), select_application_window(id,name). \
+Use click_on_coordinates only as fallback when the target control is missing from control list."
     } else {
         "Tool selection policy: \
 Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \

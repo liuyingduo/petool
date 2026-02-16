@@ -66,6 +66,16 @@ pub struct ControlSnapshot {
     pub id: String,
     pub name: String,
     pub class_name: String,
+    #[serde(default)]
+    pub control_type: String,
+    #[serde(default)]
+    pub automation_id: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub is_enabled: bool,
+    #[serde(default)]
+    pub is_offscreen: bool,
     pub rect: DesktopRect,
     pub parent_window_id: String,
     pub hwnd: i64,

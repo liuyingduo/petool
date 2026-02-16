@@ -191,7 +191,11 @@ impl LlmService {
         self.chat_openai_compatible(model, messages).await
     }
 
-    async fn chat_openai_compatible(&self, model: &str, messages: Vec<ChatMessage>) -> Result<String> {
+    async fn chat_openai_compatible(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+    ) -> Result<String> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         let request = ChatRequest {
@@ -511,12 +515,18 @@ impl LlmService {
                     Err(_) => continue,
                 };
 
-                let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+                let event_type = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
 
                 if event_type == "content_block_start" {
                     let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     if let Some(block) = value.get("content_block") {
-                        let block_type = block.get("type").and_then(Value::as_str).unwrap_or_default();
+                        let block_type = block
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         if block_type == "tool_use" {
                             let entry = tool_call_builders.entry(index).or_default();
                             if let Some(id) = block.get("id").and_then(Value::as_str) {
@@ -548,7 +558,10 @@ impl LlmService {
                     let Some(delta) = value.get("delta") else {
                         continue;
                     };
-                    let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or_default();
+                    let delta_type = delta
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
 
                     if delta_type == "text_delta" {
                         if let Some(part) = delta.get("text").and_then(Value::as_str) {
@@ -697,7 +710,11 @@ impl LlmService {
                     "tool_use_id": tool_use_id,
                     "content": result_text
                 }));
-                self.push_or_merge_anthropic_message(&mut anthropic_messages, "user", content_blocks);
+                self.push_or_merge_anthropic_message(
+                    &mut anthropic_messages,
+                    "user",
+                    content_blocks,
+                );
                 continue;
             }
 

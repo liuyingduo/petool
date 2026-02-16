@@ -10,7 +10,7 @@ use crate::utils::get_app_log_dir;
 
 use super::types::{
     ControlSnapshot, DesktopResponseEnvelope, DesktopResponseMeta, DesktopRiskLevel,
-    DesktopToolRequest,
+    DesktopToolRequest, WindowSnapshot,
 };
 
 #[cfg(target_os = "windows")]
@@ -19,6 +19,8 @@ use super::win;
 #[derive(Debug, Default)]
 pub(super) struct DesktopSessionState {
     pub selected_window_hwnd: Option<i64>,
+    pub window_cache: Vec<WindowSnapshot>,
+    pub windows_cached_at: Option<Instant>,
     pub controls_cache: Vec<ControlSnapshot>,
     pub controls_cached_at: Option<Instant>,
 }
@@ -161,14 +163,22 @@ pub fn classify_action_risk(action: &str) -> DesktopRiskLevel {
     match normalized.as_str() {
         "status"
         | "list_windows"
+        | "get_desktop_app_info"
+        | "get_desktop_app_target_info"
         | "select_window"
+        | "select_application_window"
         | "get_window_info"
+        | "get_app_window_info"
         | "get_controls"
+        | "get_app_window_controls_info"
+        | "get_app_window_controls_target_info"
         | "get_ui_tree"
         | "capture_desktop_screenshot"
         | "capture_window_screenshot"
         | "get_control_texts"
+        | "texts"
         | "wait"
+        | "summary"
         | "word_get_doc_info"
         | "excel_get_workbook_info"
         | "ppt_get_presentation_info" => DesktopRiskLevel::Low,

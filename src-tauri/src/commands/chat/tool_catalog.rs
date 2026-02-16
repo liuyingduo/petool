@@ -551,17 +551,23 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         DESKTOP_TOOL,
-        "Control Windows desktop GUI and Office apps via a single action-style interface (window listing/selection, control query, click/type/drag/scroll/keyboard, screenshots, and Word/Excel/PPT COM actions).".to_string(),
+        "Control Windows desktop GUI and Office apps with UFO-style workflow. \
+         Required sequence for reliable UI actions: \
+         1) get_desktop_app_info or list_windows, \
+         2) select_application_window or select_window, \
+         3) get_app_window_controls_info or get_controls (refresh=true), \
+         4) control actions (click_input/set_edit_text/keyboard_input/wheel_mouse_input/texts) using exact control id + exact name. \
+         Use click_on_coordinates only when target control is missing from control list.".to_string(),
         json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "status|list_windows|select_window|get_window_info|get_controls|get_ui_tree|capture_desktop_screenshot|capture_window_screenshot|get_control_texts|wait|launch_application|close_application|click_input|click_on_coordinates|drag_on_coordinates|set_edit_text|keyboard_input|wheel_mouse_input|word_get_doc_info|word_insert_text|word_insert_table|word_save_as|excel_get_workbook_info|excel_set_cell|excel_set_range|excel_save_as|ppt_get_presentation_info|ppt_add_slide|ppt_set_text|ppt_save_as"
+                    "description": "status|list_windows|get_desktop_app_info|get_desktop_app_target_info|select_window|select_application_window|get_window_info|get_app_window_info|get_controls|get_app_window_controls_info|get_app_window_controls_target_info|get_ui_tree|capture_desktop_screenshot|capture_window_screenshot|get_control_texts|texts|wait|summary|launch_application|close_application|click_input|click_on_coordinates|drag_on_coordinates|set_edit_text|keyboard_input|wheel_mouse_input|word_get_doc_info|word_insert_text|word_insert_table|word_save_as|excel_get_workbook_info|excel_set_cell|excel_set_range|excel_save_as|ppt_get_presentation_info|ppt_add_slide|ppt_set_text|ppt_save_as"
                 },
                 "params": {
                     "type": "object",
-                    "description": "Action-specific parameters. For launch_application use one of: command | application_path | app_path | executable | app_name | bash_command. Optional: args (string[]), cwd."
+                    "description": "Action-specific parameters. UFO-style canonical args: select_application_window(id,name), set_edit_text(id,name,text), keyboard_input(id,name,keys,control_focus), wheel_mouse_input(id,name,wheel_dist), click_input(id,name,button,double), texts(id,name). For control actions use exact id + exact name. For control/window collectors pass field_list (string[]). For launch_application use one of: command | application_path | app_path | executable | app_name | bash_command. Optional: args (string[]), cwd. Compatibility: select_application_window also accepts window_id/hwnd; keyboard_input also accepts text as alias of keys."
                 }
             },
             "required": ["action"]
