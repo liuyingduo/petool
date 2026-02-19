@@ -5,6 +5,51 @@ fn default_tool_display_mode() -> String {
     "compact".to_string()
 }
 
+fn default_automation_enabled() -> bool {
+    true
+}
+
+fn default_automation_max_concurrent_runs() -> u32 {
+    1
+}
+
+fn default_automation_close_behavior() -> AutomationCloseBehavior {
+    AutomationCloseBehavior::Ask
+}
+
+fn default_heartbeat_enabled() -> bool {
+    true
+}
+
+fn default_heartbeat_every_minutes() -> u32 {
+    30
+}
+
+fn default_heartbeat_prompt() -> String {
+    "Read HEARTBEAT.md if it exists in workspace and check pending tasks. If nothing needs attention, reply HEARTBEAT_OK."
+        .to_string()
+}
+
+fn default_heartbeat_tool_whitelist() -> Vec<String> {
+    vec![
+        "workspace_list_directory".to_string(),
+        "workspace_read_file".to_string(),
+        "workspace_glob".to_string(),
+        "workspace_grep".to_string(),
+        "workspace_codesearch".to_string(),
+        "workspace_lsp_symbols".to_string(),
+        "web_fetch".to_string(),
+        "web_search".to_string(),
+        "sessions_list".to_string(),
+        "sessions_history".to_string(),
+        "sessions_send".to_string(),
+        "sessions_spawn".to_string(),
+        "workspace_write_file".to_string(),
+        "workspace_edit_file".to_string(),
+        "workspace_apply_patch".to_string(),
+    ]
+}
+
 fn default_browser_enabled() -> bool {
     true
 }
@@ -128,6 +173,77 @@ pub struct Config {
     pub browser: BrowserConfig,
     #[serde(default)]
     pub desktop: DesktopConfig,
+    #[serde(default)]
+    pub automation: AutomationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationCloseBehavior {
+    Ask,
+    MinimizeToTray,
+    Exit,
+}
+
+impl Default for AutomationCloseBehavior {
+    fn default() -> Self {
+        default_automation_close_behavior()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatAutomationConfig {
+    #[serde(default = "default_heartbeat_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_heartbeat_every_minutes")]
+    pub every_minutes: u32,
+    #[serde(default)]
+    pub target_conversation_id: Option<String>,
+    #[serde(default = "default_heartbeat_prompt")]
+    pub prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub workspace_directory: Option<String>,
+    #[serde(default = "default_heartbeat_tool_whitelist")]
+    pub tool_whitelist: Vec<String>,
+}
+
+impl Default for HeartbeatAutomationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_heartbeat_enabled(),
+            every_minutes: default_heartbeat_every_minutes(),
+            target_conversation_id: None,
+            prompt: default_heartbeat_prompt(),
+            model: None,
+            workspace_directory: None,
+            tool_whitelist: default_heartbeat_tool_whitelist(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationConfig {
+    #[serde(default = "default_automation_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_automation_max_concurrent_runs")]
+    pub max_concurrent_runs: u32,
+    #[serde(default = "default_automation_close_behavior")]
+    pub close_behavior: AutomationCloseBehavior,
+    #[serde(default)]
+    pub heartbeat: HeartbeatAutomationConfig,
+}
+
+impl Default for AutomationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_automation_enabled(),
+            max_concurrent_runs: default_automation_max_concurrent_runs(),
+            close_behavior: default_automation_close_behavior(),
+            heartbeat: HeartbeatAutomationConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -334,6 +450,7 @@ impl Default for Config {
             auto_approve_tool_requests: false,
             browser: BrowserConfig::default(),
             desktop: DesktopConfig::default(),
+            automation: AutomationConfig::default(),
         }
     }
 }
@@ -375,5 +492,14 @@ mod tests {
             config.desktop.approval_mode,
             DesktopApprovalMode::HighRiskOnly
         );
+        assert!(config.automation.enabled);
+        assert_eq!(config.automation.max_concurrent_runs, 1);
+        assert_eq!(
+            config.automation.close_behavior,
+            AutomationCloseBehavior::Ask
+        );
+        assert!(config.automation.heartbeat.enabled);
+        assert_eq!(config.automation.heartbeat.every_minutes, 30);
+        assert!(!config.automation.heartbeat.tool_whitelist.is_empty());
     }
 }

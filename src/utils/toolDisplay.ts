@@ -14,6 +14,15 @@ export function normalizeToolName(name: string) {
 
 export function renderToolLabel(name: string) {
   const raw = name.trim()
+  const schedulerLabels: Record<string, string> = {
+    scheduler_jobs_list: 'scheduler.list_jobs',
+    scheduler_job_create: 'scheduler.create_job',
+    scheduler_job_update: 'scheduler.update_job',
+    scheduler_job_delete: 'scheduler.delete_job',
+    scheduler_job_run: 'scheduler.run_job',
+    scheduler_runs_list: 'scheduler.list_runs'
+  }
+  if (schedulerLabels[raw]) return schedulerLabels[raw]
   if (!raw) return '未知工具'
 
   if (raw.startsWith('mcp__')) {
@@ -87,3 +96,4 @@ export function decodeJsonLikeString(value: string) {
     .replace(/\\r/g, '\r')
     .replace(/\\t/g, '\t')
 }
+

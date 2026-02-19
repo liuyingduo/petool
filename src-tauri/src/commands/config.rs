@@ -143,3 +143,8 @@ pub async fn validate_api_key(api_key: String, api_base: Option<String>) -> Resu
 
     Ok(response.status().is_success())
 }
+
+#[tauri::command]
+pub fn app_exit_now(app: tauri::AppHandle) {
+    app.exit(0);
+}

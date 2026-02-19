@@ -428,6 +428,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openExternal } from '@tauri-apps/plugin-shell'
@@ -497,6 +498,7 @@ const resolvingToolApproval = ref(false)
 const pausingStream = ref(false)
 const generatingImage = ref(false)
 const isWindowMaximized = ref(false)
+const handlingClosePrompt = ref(false)
 const unlistenFns: Array<() => void> = []
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 72
 let messageListScrollFrame: number | null = null
@@ -1318,6 +1320,11 @@ onMounted(async () => {
       }
     }))
   )
+  unlistenFns.push(
+    await listen('app-close-requested', () => {
+      void handleClose()
+    })
+  )
 
   if (useCustomWindowChrome) {
     setupCursorPassthrough()
@@ -1536,10 +1543,53 @@ async function handleToggleMaximize() {
 }
 
 async function handleClose() {
+  if (handlingClosePrompt.value) return
+  const behavior = configStore.config.automation?.close_behavior || 'ask'
+
+  const minimizeToTray = async () => {
+    try {
+      await appWindow.hide()
+    } catch {
+      // ignore unsupported runtime
+    }
+  }
+
+  const exitApp = async () => {
+    try {
+      await invoke('app_exit_now')
+    } catch {
+      // ignore unsupported runtime
+    }
+  }
+
+  if (behavior === 'minimize_to_tray') {
+    await minimizeToTray()
+    return
+  }
+  if (behavior === 'exit') {
+    await exitApp()
+    return
+  }
+
+  handlingClosePrompt.value = true
   try {
-    await appWindow.close()
-  } catch {
-    // ignore unsupported runtime
+    await ElMessageBox.confirm(
+      '选择关闭方式：最小化到托盘继续运行，或直接退出应用。',
+      '关闭 PETool',
+      {
+        confirmButtonText: '退出应用',
+        cancelButtonText: '最小化到托盘',
+        distinguishCancelAndClose: true,
+        type: 'warning'
+      }
+    )
+    await exitApp()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') {
+      await minimizeToTray()
+    }
+  } finally {
+    handlingClosePrompt.value = false
   }
 }
 

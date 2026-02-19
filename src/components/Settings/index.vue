@@ -319,6 +319,11 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- Automation -->
+      <el-tab-pane label="Automation" name="automation">
+        <AutomationPanel v-model:automation="localConfig.automation" />
+      </el-tab-pane>
+
       <!-- MCP Servers -->
       <el-tab-pane label="MCP Servers" name="mcp">
         <div class="mcp-list">
@@ -416,6 +421,7 @@ import {
   useConfigStore,
   type BrowserConfig,
   type DesktopConfig,
+  type AutomationConfig,
   type BrowserProfileConfig,
   type Config,
   type McpServerConfig
@@ -423,6 +429,7 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, FolderOpened, Plus, Delete, RefreshRight } from '@element-plus/icons-vue'
 import { invoke } from '@tauri-apps/api/core'
+import AutomationPanel from './AutomationPanel.vue'
 
 interface Props {
   modelValue?: boolean
@@ -479,6 +486,37 @@ const defaultDesktopConfig: DesktopConfig = {
   approval_mode: 'high_risk_only'
 }
 
+const defaultAutomationConfig: AutomationConfig = {
+  enabled: true,
+  max_concurrent_runs: 1,
+  close_behavior: 'ask',
+  heartbeat: {
+    enabled: true,
+    every_minutes: 30,
+    target_conversation_id: null,
+    prompt: 'Read HEARTBEAT.md if it exists in workspace and check pending tasks. If nothing needs attention, reply HEARTBEAT_OK.',
+    model: null,
+    workspace_directory: null,
+    tool_whitelist: [
+      'workspace_list_directory',
+      'workspace_read_file',
+      'workspace_glob',
+      'workspace_grep',
+      'workspace_codesearch',
+      'workspace_lsp_symbols',
+      'web_fetch',
+      'web_search',
+      'sessions_list',
+      'sessions_history',
+      'sessions_send',
+      'sessions_spawn',
+      'workspace_write_file',
+      'workspace_edit_file',
+      'workspace_apply_patch'
+    ]
+  }
+}
+
 const defaultConfig: Config = {
   api_key: '',
   api_base: 'https://open.bigmodel.cn/api/paas/v4',
@@ -503,7 +541,8 @@ const defaultConfig: Config = {
   tool_path_permissions: [],
   auto_approve_tool_requests: false,
   browser: deepClone(defaultBrowserConfig),
-  desktop: deepClone(defaultDesktopConfig)
+  desktop: deepClone(defaultDesktopConfig),
+  automation: deepClone(defaultAutomationConfig)
 }
 
 const localConfig = ref<Config>({
@@ -628,6 +667,53 @@ function ensureDesktopConfig(target: Config) {
   }
 }
 
+function ensureAutomationConfig(target: Config) {
+  if (!target.automation) {
+    target.automation = deepClone(defaultAutomationConfig)
+  }
+  if (target.automation.enabled === undefined) {
+    target.automation.enabled = defaultAutomationConfig.enabled
+  }
+  if (
+    target.automation.max_concurrent_runs === undefined ||
+    Number.isNaN(Number(target.automation.max_concurrent_runs))
+  ) {
+    target.automation.max_concurrent_runs = defaultAutomationConfig.max_concurrent_runs
+  }
+  target.automation.max_concurrent_runs = Math.max(
+    1,
+    Math.min(8, Math.trunc(target.automation.max_concurrent_runs))
+  )
+  if (!['ask', 'minimize_to_tray', 'exit'].includes(target.automation.close_behavior)) {
+    target.automation.close_behavior = defaultAutomationConfig.close_behavior
+  }
+  if (!target.automation.heartbeat) {
+    target.automation.heartbeat = deepClone(defaultAutomationConfig.heartbeat)
+  }
+  if (target.automation.heartbeat.enabled === undefined) {
+    target.automation.heartbeat.enabled = defaultAutomationConfig.heartbeat.enabled
+  }
+  if (
+    target.automation.heartbeat.every_minutes === undefined ||
+    Number.isNaN(Number(target.automation.heartbeat.every_minutes))
+  ) {
+    target.automation.heartbeat.every_minutes = defaultAutomationConfig.heartbeat.every_minutes
+  }
+  target.automation.heartbeat.every_minutes = Math.max(
+    1,
+    Math.min(1440, Math.trunc(target.automation.heartbeat.every_minutes))
+  )
+  if (typeof target.automation.heartbeat.prompt !== 'string' || !target.automation.heartbeat.prompt.trim()) {
+    target.automation.heartbeat.prompt = defaultAutomationConfig.heartbeat.prompt
+  }
+  if (!Array.isArray(target.automation.heartbeat.tool_whitelist)) {
+    target.automation.heartbeat.tool_whitelist = [...defaultAutomationConfig.heartbeat.tool_whitelist]
+  }
+  target.automation.heartbeat.tool_whitelist = target.automation.heartbeat.tool_whitelist
+    .map((item) => item.trim())
+    .filter((item, index, self) => item.length > 0 && self.indexOf(item) === index)
+}
+
 const browserProfileNames = computed(() => {
   const browser = localConfig.value.browser
   if (!browser?.profiles) return []
@@ -667,11 +753,13 @@ watch(() => props.modelValue, (val) => {
       ...currentConfig,
       mcp_servers: [...(currentConfig.mcp_servers ?? [])],
       browser: deepClone(currentConfig.browser ?? defaultBrowserConfig),
-      desktop: deepClone(currentConfig.desktop ?? defaultDesktopConfig)
+      desktop: deepClone(currentConfig.desktop ?? defaultDesktopConfig),
+      automation: deepClone(currentConfig.automation ?? defaultAutomationConfig)
     }
     localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
     ensureDesktopConfig(localConfig.value)
+    ensureAutomationConfig(localConfig.value)
   }
 })
 
@@ -692,6 +780,7 @@ async function handleSave() {
     localConfig.value.theme = 'light'
     ensureBrowserConfig(localConfig.value)
     ensureDesktopConfig(localConfig.value)
+    ensureAutomationConfig(localConfig.value)
     await configStore.saveConfig(localConfig.value)
     ElMessage.success('Settings saved successfully')
     dialogVisible.value = false

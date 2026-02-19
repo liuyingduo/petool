@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
-use async_openai::{
-    config::OpenAIConfig, traits::RequestOptionsBuilder, Client as OpenAiClient,
-};
+use async_openai::{config::OpenAIConfig, traits::RequestOptionsBuilder, Client as OpenAiClient};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -181,7 +179,7 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
 
     // Some providers stream partial_json as full snapshots at each delta.
     // If the incoming chunk is already a valid JSON object, prefer replacing
-    // current buffer to avoid corrupt concatenation like "}{". 
+    // current buffer to avoid corrupt concatenation like "}{".
     if chunk_trimmed.starts_with('{') && serde_json::from_str::<Value>(chunk_trimmed).is_ok() {
         *base = chunk_trimmed.to_string();
         return;
@@ -238,10 +236,7 @@ fn is_system_role(role: &str) -> bool {
 }
 
 fn is_minimax_model(model: &str) -> bool {
-    model
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("minimax-")
+    model.trim().to_ascii_lowercase().starts_with("minimax-")
 }
 
 fn merge_leading_system_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
@@ -332,12 +327,8 @@ impl LlmService {
             // tool_stream: None,
         };
 
-        let chat_response: ChatResponse = self
-            .client
-            .chat()
-            .create_byot(request)
-            .await
-            .map_err(|e| {
+        let chat_response: ChatResponse =
+            self.client.chat().create_byot(request).await.map_err(|e| {
                 eprintln!(
                     "[llm] non-stream request failed: model={}, error={}",
                     model, e
@@ -428,11 +419,7 @@ impl LlmService {
             // Some OpenAI-compatible providers (including MiniMax /v1) reject tool_stream.
             // tool_stream: None,
         };
-        let primary_stream_result = self
-            .client
-            .chat()
-            .create_stream_byot(request.clone())
-            .await;
+        let primary_stream_result = self.client.chat().create_stream_byot(request.clone()).await;
         let mut stream = match primary_stream_result {
             Ok(stream) => stream,
             Err(primary_error) => {
@@ -625,8 +612,8 @@ impl LlmService {
                         }
                         if let Some(input) = block.get("input") {
                             if !input.is_null() {
-                                let raw =
-                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                                let raw = serde_json::to_string(input)
+                                    .unwrap_or_else(|_| "{}".to_string());
                                 append_tool_arguments_chunk(&mut entry.arguments, &raw);
                                 callback(LlmStreamEvent::ToolCallDelta(ToolCallDelta {
                                     index,

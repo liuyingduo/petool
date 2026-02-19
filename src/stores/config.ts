@@ -27,6 +27,7 @@ export interface Config {
   auto_approve_tool_requests: boolean
   browser: BrowserConfig
   desktop: DesktopConfig
+  automation: AutomationConfig
 }
 
 export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
@@ -85,6 +86,25 @@ export interface DesktopConfig {
   approval_mode: DesktopApprovalMode
 }
 
+export type AutomationCloseBehavior = 'ask' | 'minimize_to_tray' | 'exit'
+
+export interface HeartbeatAutomationConfig {
+  enabled: boolean
+  every_minutes: number
+  target_conversation_id?: string | null
+  prompt: string
+  model?: string | null
+  workspace_directory?: string | null
+  tool_whitelist: string[]
+}
+
+export interface AutomationConfig {
+  enabled: boolean
+  max_concurrent_runs: number
+  close_behavior: AutomationCloseBehavior
+  heartbeat: HeartbeatAutomationConfig
+}
+
 export const useConfigStore = defineStore('config', () => {
   const config = ref<Config>({
     api_base: 'https://open.bigmodel.cn/api/paas/v4',
@@ -139,6 +159,36 @@ export const useConfigStore = defineStore('config', () => {
       screenshot_dir: null,
       screenshot_keep_count: 200,
       approval_mode: 'high_risk_only'
+    },
+    automation: {
+      enabled: true,
+      max_concurrent_runs: 1,
+      close_behavior: 'ask',
+      heartbeat: {
+        enabled: true,
+        every_minutes: 30,
+        target_conversation_id: null,
+        prompt: 'Read HEARTBEAT.md if it exists in workspace and check pending tasks. If nothing needs attention, reply HEARTBEAT_OK.',
+        model: null,
+        workspace_directory: null,
+        tool_whitelist: [
+          'workspace_list_directory',
+          'workspace_read_file',
+          'workspace_glob',
+          'workspace_grep',
+          'workspace_codesearch',
+          'workspace_lsp_symbols',
+          'web_fetch',
+          'web_search',
+          'sessions_list',
+          'sessions_history',
+          'sessions_send',
+          'sessions_spawn',
+          'workspace_write_file',
+          'workspace_edit_file',
+          'workspace_apply_patch'
+        ]
+      }
     }
   })
 

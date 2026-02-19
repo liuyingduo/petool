@@ -7,15 +7,60 @@ mod services;
 mod state;
 mod utils;
 
-use commands::{chat, config, fs, mcp, skills};
+use commands::{chat, config, fs, mcp, scheduler, skills};
+use models::config::{AutomationCloseBehavior, Config};
 use services::database::Database;
 use services::mcp_client::McpManager;
+use services::scheduler::initialize_scheduler;
 use services::skill_manager::SkillManager;
 use state::AppState;
 use state::AppStateInner;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, WindowEvent};
+use utils::load_config;
+
+const TRAY_MENU_OPEN: &str = "tray-open-petool";
+const TRAY_MENU_EXIT: &str = "tray-exit-petool";
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &tauri::App) -> Result<TrayIcon, Box<dyn std::error::Error>> {
+    let open_item = MenuItem::with_id(app, TRAY_MENU_OPEN, "打开 PETool", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(app, TRAY_MENU_EXIT, "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open_item, &exit_item])?;
+
+    let tray = TrayIconBuilder::with_id("petool-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("PETool")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_MENU_OPEN => show_main_window(app),
+            TRAY_MENU_EXIT => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(tray)
+}
 
 #[tokio::main]
 async fn main() {
@@ -23,44 +68,80 @@ async fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let behavior = load_config::<Config>()
+                    .map(|config| config.automation.close_behavior)
+                    .unwrap_or(AutomationCloseBehavior::Ask);
+
+                match behavior {
+                    AutomationCloseBehavior::Exit => {}
+                    AutomationCloseBehavior::MinimizeToTray => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    AutomationCloseBehavior::Ask => {
+                        api.prevent_close();
+                        let _ = window.emit("app-close-requested", ());
+                    }
+                }
+            }
+        })
         .setup(|app| {
             // Initialize database
             let config_dir = app.path().app_config_dir().unwrap();
             let db_path = config_dir.join("petool.db");
             let skills_dir = config_dir.join("skills");
+            let app_handle = app.handle().clone();
 
             // Create app state
             let app_state: AppState = Arc::new(StdMutex::new(AppStateInner::new()));
             app.manage(app_state.clone());
 
             // Create MCP manager
-            let mcp_manager: Arc<tokio::sync::Mutex<McpManager>> =
+            let mcp_manager_state: Arc<tokio::sync::Mutex<McpManager>> =
                 Arc::new(tokio::sync::Mutex::new(McpManager::new()));
-            app.manage(mcp_manager);
+            app.manage(mcp_manager_state.clone());
 
             // Create skill manager
-            let skill_manager_result = SkillManager::new(skills_dir);
-            if let Ok(skill_manager) = skill_manager_result {
-                let skill_manager: Arc<tokio::sync::Mutex<SkillManager>> =
-                    Arc::new(tokio::sync::Mutex::new(skill_manager));
-                app.manage(skill_manager.clone());
+            let skill_manager = SkillManager::new(skills_dir)?;
+            let skill_manager_state: Arc<tokio::sync::Mutex<SkillManager>> =
+                Arc::new(tokio::sync::Mutex::new(skill_manager));
+            app.manage(skill_manager_state.clone());
 
-                tauri::async_runtime::spawn(async move {
-                    let mut manager = skill_manager.lock().await;
-                    if let Err(err) = manager.load_skills().await {
-                        eprintln!("Failed to load skills: {}", err);
-                    }
-                });
-            }
+            let skill_manager_state_for_load = skill_manager_state.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut manager = skill_manager_state_for_load.lock().await;
+                if let Err(err) = manager.load_skills().await {
+                    eprintln!("Failed to load skills: {}", err);
+                }
+            });
+
+            let tray_icon = setup_tray(app)?;
+            app.manage(tray_icon);
 
             // Initialize database in background
             let app_state_clone = app_state.clone();
+            let mcp_state_clone = mcp_manager_state.clone();
+            let skill_state_clone = skill_manager_state.clone();
             tauri::async_runtime::spawn(async move {
                 if let Ok(db) = Database::new(db_path).await {
+                    let pool = db.pool().clone();
                     if let Ok(mut state) = app_state_clone.lock() {
                         state.set_db(db);
                     } else {
                         eprintln!("Failed to acquire app state lock while setting database");
+                        return;
+                    }
+
+                    if let Err(error) = initialize_scheduler(
+                        app_handle,
+                        pool,
+                        app_state_clone,
+                        mcp_state_clone,
+                        skill_state_clone,
+                    ) {
+                        eprintln!("Failed to initialize scheduler: {}", error);
                     }
                 }
             });
@@ -74,6 +155,7 @@ async fn main() {
             config::validate_api_key,
             config::open_browser_profile_dir,
             config::reset_browser_profile,
+            config::app_exit_now,
             // Chat commands
             chat::send_message,
             chat::stream_message,
@@ -111,6 +193,17 @@ async fn main() {
             skills::execute_skill,
             skills::toggle_skill,
             skills::update_skill,
+            // Scheduler commands
+            scheduler::scheduler_get_status,
+            scheduler::scheduler_list_jobs,
+            scheduler::scheduler_get_job,
+            scheduler::scheduler_create_job,
+            scheduler::scheduler_update_job,
+            scheduler::scheduler_delete_job,
+            scheduler::scheduler_run_job_now,
+            scheduler::scheduler_run_heartbeat_now,
+            scheduler::scheduler_list_runs,
+            scheduler::scheduler_get_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

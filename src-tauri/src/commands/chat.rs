@@ -10,6 +10,10 @@ use crate::services::llm::{
     LlmStreamResult,
 };
 use crate::services::mcp_client::{HttpTransport, McpClient, StdioTransport};
+use crate::services::scheduler::models::{
+    SchedulerJobCreateInput, SchedulerJobPatchInput, SchedulerScheduleKind, SchedulerSessionTarget,
+};
+use crate::services::scheduler::scheduler_manager;
 use crate::state::AppState;
 use chrono::Utc;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -73,7 +77,7 @@ async fn request_stream_stop(conversation_id: &str) -> bool {
     false
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolApprovalDecision {
     AllowOnce,
@@ -184,6 +188,12 @@ const SESSIONS_HISTORY_TOOL: &str = "sessions_history";
 const SESSIONS_SEND_TOOL: &str = "sessions_send";
 const SESSIONS_SPAWN_TOOL: &str = "sessions_spawn";
 const AGENTS_LIST_TOOL: &str = "agents_list";
+const SCHEDULER_JOBS_LIST_TOOL: &str = "scheduler_jobs_list";
+const SCHEDULER_JOB_CREATE_TOOL: &str = "scheduler_job_create";
+const SCHEDULER_JOB_UPDATE_TOOL: &str = "scheduler_job_update";
+const SCHEDULER_JOB_DELETE_TOOL: &str = "scheduler_job_delete";
+const SCHEDULER_JOB_RUN_TOOL: &str = "scheduler_job_run";
+const SCHEDULER_RUNS_LIST_TOOL: &str = "scheduler_runs_list";
 const DEFAULT_WEB_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_WEB_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
@@ -234,6 +244,12 @@ enum RuntimeTool {
     SessionsSend,
     SessionsSpawn,
     AgentsList,
+    SchedulerJobsList,
+    SchedulerJobCreate,
+    SchedulerJobUpdate,
+    SchedulerJobDelete,
+    SchedulerJobRun,
+    SchedulerRunsList,
 }
 
 #[derive(Debug)]
@@ -977,6 +993,395 @@ async fn resolve_tool_execution_decision(
             }
         }
     })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BackgroundAgentRunRequest {
+    pub target_conversation_id: String,
+    pub content: String,
+    pub workspace_directory: Option<String>,
+    pub model_override: Option<String>,
+    pub persist_main_context: bool,
+    pub tool_whitelist: Option<HashSet<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BackgroundAgentRunResult {
+    pub content: String,
+    pub reasoning: Option<String>,
+    pub rounds: usize,
+    pub tool_calls: usize,
+    pub blocked_tools: usize,
+    pub guard_stopped: bool,
+}
+
+fn is_tool_allowed_by_scheduler_whitelist(
+    whitelist: &HashSet<String>,
+    tool_name: &str,
+    parsed_arguments: &Value,
+) -> bool {
+    if whitelist.is_empty() {
+        return false;
+    }
+    if whitelist.contains(tool_name) {
+        return true;
+    }
+    if whitelist
+        .iter()
+        .any(|pattern| wildcard_match(pattern, tool_name))
+    {
+        return true;
+    }
+    let path_candidate = extract_tool_path_argument(parsed_arguments).unwrap_or_default();
+    if !path_candidate.is_empty()
+        && whitelist
+            .iter()
+            .any(|pattern| wildcard_match(pattern, &path_candidate))
+    {
+        return true;
+    }
+    false
+}
+
+fn resolve_background_tool_execution_decision(
+    config: &Config,
+    tool_call: &ChatToolCall,
+    parsed_arguments: &Value,
+    always_allowed_tools: &HashSet<String>,
+    whitelist: Option<&HashSet<String>>,
+) -> ToolApprovalDecision {
+    let configured_action = resolve_tool_permission_action(
+        config,
+        &tool_call.function.name,
+        extract_tool_path_argument(parsed_arguments).as_deref(),
+    );
+    let configured_action = resolve_desktop_permission_action(
+        config,
+        &tool_call.function.name,
+        parsed_arguments,
+        configured_action,
+    );
+
+    if configured_action == ToolPermissionAction::Deny {
+        return ToolApprovalDecision::Deny;
+    }
+
+    if let Some(whitelist) = whitelist {
+        if !is_tool_allowed_by_scheduler_whitelist(
+            whitelist,
+            &tool_call.function.name,
+            parsed_arguments,
+        ) {
+            return ToolApprovalDecision::Deny;
+        }
+        return ToolApprovalDecision::AllowAlways;
+    }
+
+    match configured_action {
+        ToolPermissionAction::Allow => ToolApprovalDecision::AllowAlways,
+        ToolPermissionAction::Ask => {
+            if config.auto_approve_tool_requests
+                || always_allowed_tools.contains(&tool_call.function.name)
+            {
+                ToolApprovalDecision::AllowAlways
+            } else {
+                ToolApprovalDecision::Deny
+            }
+        }
+        ToolPermissionAction::Deny => ToolApprovalDecision::Deny,
+    }
+}
+
+fn push_background_tool_result_message(
+    context_messages: &mut Vec<ChatMessage>,
+    tool_call: &ChatToolCall,
+    result_text: String,
+) {
+    context_messages.push(ChatMessage {
+        role: "tool".to_string(),
+        content: Some(result_text),
+        tool_calls: None,
+        tool_call_id: Some(tool_call.id.clone()),
+        reasoning: None,
+    });
+}
+
+pub(crate) async fn run_agent_turn_background(
+    state: AppState,
+    mcp_state: McpState,
+    skill_state: SkillManagerState,
+    request: BackgroundAgentRunRequest,
+) -> Result<BackgroundAgentRunResult, String> {
+    let content = request.content.trim().to_string();
+    if content.is_empty() {
+        return Err("Background run content cannot be empty".to_string());
+    }
+
+    let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;
+    let workspace_root = resolve_workspace_root(&config, request.workspace_directory.as_deref())?;
+    let RuntimeToolCatalog {
+        available_tools,
+        tool_map,
+    } = build_runtime_tool_catalog(&mcp_state, &config, &workspace_root).await?;
+
+    let pool = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.db().pool().clone()
+    };
+
+    let model_to_use = if let Some(override_model) = request
+        .model_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        override_model.to_string()
+    } else if request.persist_main_context {
+        resolve_conversation_model(&pool, &request.target_conversation_id, &config.model).await?
+    } else {
+        config.model.clone()
+    };
+
+    let llm_service = resolve_text_llm_service(&config, &model_to_use)?;
+
+    let mut context_messages = if request.persist_main_context {
+        load_conversation_context(&pool, &request.target_conversation_id).await?
+    } else {
+        Vec::new()
+    };
+    prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
+    prepend_tool_usage_guidance(&mut context_messages);
+    let skills_guidance = build_skills_usage_guidance(&skill_state).await;
+    prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
+
+    if request.persist_main_context {
+        insert_message(
+            &pool,
+            &request.target_conversation_id,
+            "user",
+            &content,
+            None,
+            None,
+        )
+        .await?;
+    }
+
+    context_messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: Some(content),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning: None,
+    });
+
+    let mut always_allowed_tools = HashSet::<String>::new();
+    let mut last_tool_signature: Option<String> = None;
+    let mut repeated_signature_rounds = 0usize;
+    let mut rounds = 0usize;
+    let mut total_tool_calls = 0usize;
+    let mut blocked_tools = 0usize;
+    let mut guard_stopped = false;
+
+    loop {
+        rounds += 1;
+        let stream_result = llm_service
+            .chat_stream_with_tools(
+                &model_to_use,
+                context_messages.clone(),
+                if available_tools.is_empty() {
+                    None
+                } else {
+                    Some(available_tools.clone())
+                },
+                |_| {},
+                || false,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let assistant_content = stream_result.content.clone();
+        let assistant_reasoning = if stream_result.reasoning.trim().is_empty() {
+            None
+        } else {
+            Some(stream_result.reasoning.clone())
+        };
+
+        if stream_result.tool_calls.is_empty() {
+            if request.persist_main_context {
+                insert_message(
+                    &pool,
+                    &request.target_conversation_id,
+                    "assistant",
+                    &assistant_content,
+                    None,
+                    assistant_reasoning.clone(),
+                )
+                .await?;
+            }
+
+            return Ok(BackgroundAgentRunResult {
+                content: assistant_content,
+                reasoning: assistant_reasoning,
+                rounds,
+                tool_calls: total_tool_calls,
+                blocked_tools,
+                guard_stopped,
+            });
+        }
+
+        total_tool_calls += stream_result.tool_calls.len();
+        let assistant_tool_calls_json =
+            serde_json::to_string(&stream_result.tool_calls).map_err(|e| e.to_string())?;
+        if request.persist_main_context {
+            insert_message(
+                &pool,
+                &request.target_conversation_id,
+                "assistant",
+                &assistant_content,
+                Some(assistant_tool_calls_json),
+                assistant_reasoning.clone(),
+            )
+            .await?;
+        }
+
+        context_messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: if assistant_content.is_empty() {
+                None
+            } else {
+                Some(assistant_content)
+            },
+            tool_calls: Some(stream_result.tool_calls.clone()),
+            tool_call_id: None,
+            reasoning: assistant_reasoning,
+        });
+
+        update_repeated_signature_rounds(
+            &mut last_tool_signature,
+            &mut repeated_signature_rounds,
+            build_tool_round_signature(&stream_result.tool_calls),
+        );
+
+        if repeated_signature_rounds >= 2 {
+            guard_stopped = true;
+            let guard_text = REPEATED_TOOL_GUARD_TEXT.to_string();
+            if request.persist_main_context {
+                insert_message(
+                    &pool,
+                    &request.target_conversation_id,
+                    "assistant",
+                    &guard_text,
+                    None,
+                    None,
+                )
+                .await?;
+            }
+            return Ok(BackgroundAgentRunResult {
+                content: guard_text,
+                reasoning: None,
+                rounds,
+                tool_calls: total_tool_calls,
+                blocked_tools,
+                guard_stopped,
+            });
+        }
+
+        for tool_call in stream_result.tool_calls {
+            let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments);
+            let decision = resolve_background_tool_execution_decision(
+                &config,
+                &tool_call,
+                &parsed_arguments,
+                &always_allowed_tools,
+                request.tool_whitelist.as_ref(),
+            );
+
+            if decision == ToolApprovalDecision::Deny {
+                blocked_tools += 1;
+                let error_text = format!(
+                    "Background scheduler denied tool '{}' by whitelist/policy",
+                    tool_call.function.name
+                );
+                let result_text = format_tool_error_result(&error_text)?;
+                if request.persist_main_context {
+                    persist_tool_result_message(
+                        &pool,
+                        &request.target_conversation_id,
+                        &mut context_messages,
+                        &tool_call,
+                        result_text,
+                    )
+                    .await?;
+                } else {
+                    push_background_tool_result_message(
+                        &mut context_messages,
+                        &tool_call,
+                        result_text,
+                    );
+                }
+                continue;
+            }
+
+            always_allowed_tools.insert(tool_call.function.name.clone());
+
+            let tool_result = execute_tool_call_background(
+                &mcp_state,
+                &skill_state,
+                &config,
+                &tool_map,
+                &tool_call,
+                &workspace_root,
+                &request.target_conversation_id,
+                &pool,
+                &llm_service,
+                &model_to_use,
+            )
+            .await;
+
+            match tool_result {
+                Ok(value) => {
+                    let result_text =
+                        serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+                    if request.persist_main_context {
+                        persist_tool_result_message(
+                            &pool,
+                            &request.target_conversation_id,
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        )
+                        .await?;
+                    } else {
+                        push_background_tool_result_message(
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        );
+                    }
+                }
+                Err(error_text) => {
+                    let result_text = format_tool_error_result(&error_text)?;
+                    if request.persist_main_context {
+                        persist_tool_result_message(
+                            &pool,
+                            &request.target_conversation_id,
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        )
+                        .await?;
+                    } else {
+                        push_background_tool_result_message(
+                            &mut context_messages,
+                            &tool_call,
+                            result_text,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn build_tool_round_signature(tool_calls: &[ChatToolCall]) -> String {
@@ -2825,6 +3230,112 @@ fn execute_agents_list() -> Result<Value, String> {
     }))
 }
 
+fn require_scheduler_manager(
+) -> Result<std::sync::Arc<crate::services::scheduler::manager::SchedulerManager>, String> {
+    scheduler_manager().ok_or_else(|| "Scheduler is not initialized yet".to_string())
+}
+
+fn validate_scheduler_session_target(session_target: SchedulerSessionTarget) -> Result<(), String> {
+    if matches!(session_target, SchedulerSessionTarget::Heartbeat) {
+        return Err("scheduler jobs cannot use session_target=heartbeat".to_string());
+    }
+    Ok(())
+}
+
+async fn execute_scheduler_jobs_list(arguments: &Value) -> Result<Value, String> {
+    let include_disabled = read_bool_argument(arguments, "include_disabled", false);
+    let jobs = require_scheduler_manager()?
+        .list_jobs(include_disabled)
+        .await?;
+    Ok(json!({ "jobs": jobs }))
+}
+
+async fn execute_scheduler_job_create(arguments: &Value) -> Result<Value, String> {
+    let input: SchedulerJobCreateInput =
+        serde_json::from_value(arguments.clone()).map_err(|e| e.to_string())?;
+    validate_scheduler_session_target(input.session_target.clone())?;
+    if matches!(input.schedule_kind, SchedulerScheduleKind::At) && input.schedule_at.is_none() {
+        return Err("'schedule_at' is required for schedule_kind=at".to_string());
+    }
+    if matches!(input.schedule_kind, SchedulerScheduleKind::Every) && input.every_ms.is_none() {
+        return Err("'every_ms' is required for schedule_kind=every".to_string());
+    }
+    if matches!(input.schedule_kind, SchedulerScheduleKind::Cron) && input.cron_expr.is_none() {
+        return Err("'cron_expr' is required for schedule_kind=cron".to_string());
+    }
+    let job = require_scheduler_manager()?.create_job(input).await?;
+    Ok(json!({ "job": job }))
+}
+
+async fn execute_scheduler_job_update(arguments: &Value) -> Result<Value, String> {
+    let job_id = read_optional_string_argument(arguments, "job_id")
+        .or_else(|| read_optional_string_argument(arguments, "jobId"))
+        .ok_or_else(|| "'job_id' is required".to_string())?;
+
+    let patch_value = if let Some(patch) = arguments.get("patch") {
+        patch.clone()
+    } else {
+        let mut object = arguments
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "arguments must be an object".to_string())?;
+        object.remove("job_id");
+        object.remove("jobId");
+        Value::Object(object)
+    };
+    if !patch_value.is_object() {
+        return Err("'patch' must be an object".to_string());
+    }
+
+    let patch: SchedulerJobPatchInput =
+        serde_json::from_value(patch_value).map_err(|e| e.to_string())?;
+    if let Some(session_target) = patch.session_target.clone() {
+        validate_scheduler_session_target(session_target)?;
+    }
+
+    let job = require_scheduler_manager()?
+        .update_job(&job_id, patch)
+        .await?;
+    Ok(json!({ "job": job }))
+}
+
+async fn execute_scheduler_job_delete(arguments: &Value) -> Result<Value, String> {
+    let job_id = read_optional_string_argument(arguments, "job_id")
+        .or_else(|| read_optional_string_argument(arguments, "jobId"))
+        .ok_or_else(|| "'job_id' is required".to_string())?;
+    let removed = require_scheduler_manager()?.delete_job(&job_id).await?;
+    Ok(json!({
+        "deleted": removed,
+        "job_id": job_id
+    }))
+}
+
+async fn execute_scheduler_job_run(arguments: &Value) -> Result<Value, String> {
+    let job_id = read_optional_string_argument(arguments, "job_id")
+        .or_else(|| read_optional_string_argument(arguments, "jobId"))
+        .ok_or_else(|| "'job_id' is required".to_string())?;
+    let result = require_scheduler_manager()?.run_job_now(&job_id).await?;
+    Ok(json!({
+        "job_id": job_id,
+        "accepted": result.accepted,
+        "reason": result.reason
+    }))
+}
+
+async fn execute_scheduler_runs_list(arguments: &Value) -> Result<Value, String> {
+    let job_id = read_optional_string_argument(arguments, "job_id")
+        .or_else(|| read_optional_string_argument(arguments, "jobId"));
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(50)
+        .clamp(1, 1000);
+    let runs = require_scheduler_manager()?
+        .list_runs(job_id.as_deref(), limit)
+        .await?;
+    Ok(json!({ "runs": runs }))
+}
+
 async fn execute_core_task(
     arguments: &Value,
     llm_service: &LlmService,
@@ -2956,7 +3467,7 @@ async fn execute_core_batch(
     }))
 }
 
-async fn execute_runtime_tool(
+async fn execute_runtime_tool_non_scheduler(
     mcp_state: &McpState,
     skill_manager_state: &SkillManagerState,
     config: &Config,
@@ -3080,6 +3591,68 @@ async fn execute_runtime_tool(
             execute_sessions_spawn(arguments, pool, llm_service, default_model).await
         }
         RuntimeTool::AgentsList => execute_agents_list(),
+        RuntimeTool::SchedulerJobsList
+        | RuntimeTool::SchedulerJobCreate
+        | RuntimeTool::SchedulerJobUpdate
+        | RuntimeTool::SchedulerJobDelete
+        | RuntimeTool::SchedulerJobRun
+        | RuntimeTool::SchedulerRunsList => {
+            Err("Scheduler tools are not available in background runtime".to_string())
+        }
+    }
+}
+
+async fn execute_scheduler_runtime_tool(
+    runtime_tool: RuntimeTool,
+    arguments: &Value,
+) -> Result<Value, String> {
+    match runtime_tool {
+        RuntimeTool::SchedulerJobsList => execute_scheduler_jobs_list(arguments).await,
+        RuntimeTool::SchedulerJobCreate => execute_scheduler_job_create(arguments).await,
+        RuntimeTool::SchedulerJobUpdate => execute_scheduler_job_update(arguments).await,
+        RuntimeTool::SchedulerJobDelete => execute_scheduler_job_delete(arguments).await,
+        RuntimeTool::SchedulerJobRun => execute_scheduler_job_run(arguments).await,
+        RuntimeTool::SchedulerRunsList => execute_scheduler_runs_list(arguments).await,
+        _ => Err("Not a scheduler runtime tool".to_string()),
+    }
+}
+
+async fn execute_runtime_tool(
+    mcp_state: &McpState,
+    skill_manager_state: &SkillManagerState,
+    config: &Config,
+    runtime_tool: RuntimeTool,
+    arguments: &Value,
+    workspace_root: &Path,
+    conversation_id: &str,
+    pool: &SqlitePool,
+    llm_service: &LlmService,
+    default_model: &str,
+) -> Result<Value, String> {
+    match runtime_tool {
+        RuntimeTool::SchedulerJobsList
+        | RuntimeTool::SchedulerJobCreate
+        | RuntimeTool::SchedulerJobUpdate
+        | RuntimeTool::SchedulerJobDelete
+        | RuntimeTool::SchedulerJobRun
+        | RuntimeTool::SchedulerRunsList => {
+            execute_scheduler_runtime_tool(runtime_tool, arguments).await
+        }
+        _ => {
+            execute_runtime_tool_non_scheduler(
+                mcp_state,
+                skill_manager_state,
+                config,
+                runtime_tool,
+                arguments,
+                workspace_root,
+                conversation_id,
+                pool,
+                llm_service,
+                default_model,
+            )
+            .await
+        }
     }
 }
 
@@ -3102,6 +3675,39 @@ async fn execute_tool_call(
     let arguments = parse_tool_arguments(&tool_call.function.arguments);
 
     execute_runtime_tool(
+        mcp_state,
+        skill_manager_state,
+        config,
+        runtime_tool,
+        &arguments,
+        workspace_root,
+        conversation_id,
+        pool,
+        llm_service,
+        default_model,
+    )
+    .await
+}
+
+async fn execute_tool_call_background(
+    mcp_state: &McpState,
+    skill_manager_state: &SkillManagerState,
+    config: &Config,
+    tool_map: &HashMap<String, RuntimeTool>,
+    tool_call: &ChatToolCall,
+    workspace_root: &Path,
+    conversation_id: &str,
+    pool: &SqlitePool,
+    llm_service: &LlmService,
+    default_model: &str,
+) -> Result<Value, String> {
+    let runtime_tool = tool_map
+        .get(&tool_call.function.name)
+        .ok_or_else(|| format!("Unknown tool: {}", tool_call.function.name))?
+        .clone();
+    let arguments = parse_tool_arguments(&tool_call.function.arguments);
+
+    execute_runtime_tool_non_scheduler(
         mcp_state,
         skill_manager_state,
         config,

@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use super::{
     ChatTool, ChatToolFunction, RuntimeTool, AGENTS_LIST_TOOL, BROWSER_NAVIGATE_TOOL, BROWSER_TOOL,
     CORE_BATCH_TOOL, CORE_TASK_TOOL, DESKTOP_TOOL, IMAGE_PROBE_TOOL, IMAGE_UNDERSTAND_TOOL,
+    SCHEDULER_JOBS_LIST_TOOL, SCHEDULER_JOB_CREATE_TOOL, SCHEDULER_JOB_DELETE_TOOL,
+    SCHEDULER_JOB_RUN_TOOL, SCHEDULER_JOB_UPDATE_TOOL, SCHEDULER_RUNS_LIST_TOOL,
     SESSIONS_HISTORY_TOOL, SESSIONS_LIST_TOOL, SESSIONS_SEND_TOOL, SESSIONS_SPAWN_TOOL,
     SKILL_DISCOVER_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL,
     TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL,
@@ -694,6 +696,111 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
             "properties": {}
         }),
         RuntimeTool::AgentsList,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_JOBS_LIST_TOOL,
+        "List scheduler jobs.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "include_disabled": { "type": "boolean", "description": "Whether to include disabled jobs." }
+            }
+        }),
+        RuntimeTool::SchedulerJobsList,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_JOB_CREATE_TOOL,
+        "Create a scheduler job (at/every/cron).".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "schedule_kind": { "type": "string", "description": "at|every|cron" },
+                "schedule_at": { "type": "string", "description": "RFC3339 time for at schedule." },
+                "every_ms": { "type": "integer" },
+                "cron_expr": { "type": "string" },
+                "timezone": { "type": "string", "description": "IANA timezone for cron, e.g. Asia/Shanghai." },
+                "session_target": { "type": "string", "description": "main|isolated" },
+                "target_conversation_id": { "type": "string" },
+                "message": { "type": "string" },
+                "model_override": { "type": "string" },
+                "workspace_directory": { "type": "string" },
+                "tool_whitelist": { "type": "array", "items": { "type": "string" } },
+                "run_timeout_seconds": { "type": "integer" },
+                "delete_after_run": { "type": "boolean" }
+            },
+            "required": ["name", "schedule_kind", "session_target", "target_conversation_id", "message"]
+        }),
+        RuntimeTool::SchedulerJobCreate,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_JOB_UPDATE_TOOL,
+        "Update an existing scheduler job.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "string" },
+                "patch": { "type": "object" }
+            },
+            "required": ["job_id", "patch"]
+        }),
+        RuntimeTool::SchedulerJobUpdate,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_JOB_DELETE_TOOL,
+        "Delete a scheduler job by id.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "string" }
+            },
+            "required": ["job_id"]
+        }),
+        RuntimeTool::SchedulerJobDelete,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_JOB_RUN_TOOL,
+        "Run a scheduler job immediately.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "string" }
+            },
+            "required": ["job_id"]
+        }),
+        RuntimeTool::SchedulerJobRun,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        SCHEDULER_RUNS_LIST_TOOL,
+        "List scheduler run history.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "string" },
+                "limit": { "type": "integer" }
+            }
+        }),
+        RuntimeTool::SchedulerRunsList,
     );
 
     (tools, tool_map)
