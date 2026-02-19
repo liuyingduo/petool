@@ -393,6 +393,21 @@ label {
   min-width: 0;
 }
 
+.account-entry-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  border-radius: 12px;
+  padding: 6px 6px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.account-entry-btn:hover {
+  background: #e7e2da;
+}
+
 .sidebar-avatar-wrap {
   width: 36px;
   height: 36px;
@@ -435,7 +450,6 @@ label {
   flex-shrink: 0;
 }
 
-.account-btn,
 .settings-btn {
   width: 32px;
   height: 32px;
@@ -449,7 +463,6 @@ label {
   justify-content: center;
 }
 
-.account-btn:hover,
 .settings-btn:hover {
   background: #e7e2da;
   color: #6b6259;

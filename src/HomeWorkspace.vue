@@ -102,7 +102,12 @@
         </div>
 
         <div class="sidebar-footer">
-          <div class="sidebar-user">
+          <button
+            class="sidebar-user account-entry-btn"
+            type="button"
+            title="账户中心"
+            @click="openAccountCenter"
+          >
             <div class="sidebar-avatar-wrap">
               <img class="sidebar-avatar" :src="userAvatarUrl" alt="User Avatar" />
             </div>
@@ -110,11 +115,8 @@
               <span class="sidebar-user-name">Alex</span>
               <span class="sidebar-user-plan">Pro Plan</span>
             </div>
-          </div>
+          </button>
           <div class="sidebar-entry-actions">
-            <button class="account-btn" @click="openAccountCenter" title="账户中心">
-              <span class="material-icons-round">person</span>
-            </button>
             <button class="settings-btn" @click="openSettingsCenter" title="系统设置">
               <span class="material-icons-round">settings</span>
             </button>
