@@ -2,7 +2,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import readline from 'node:readline'
 import process from 'node:process'
-import { chromium, devices } from 'playwright'
+import net from 'node:net'
+import http from 'node:http'
+import { spawn } from 'node:child_process'
+import { chromium } from 'playwright'
 
 const runtime = {
   profiles: new Map()
@@ -18,6 +21,8 @@ const PAGE_READY_NETWORK_IDLE_STABLE_MS = 120
 const PAGE_READY_DOM_STABLE_MS = 180
 const PAGE_READY_DOM_STABILITY_TIMEOUT_MS = 900
 const TARGET_READY_TTL_MS = 15_000
+const CDP_CONNECT_TIMEOUT_MS = 15_000
+const CDP_CONNECT_RETRY_INTERVAL_MS = 180
 
 function nowIso() {
   return new Date().toISOString()
@@ -105,6 +110,125 @@ async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true })
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function findFreeTcpPort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close(() => {
+          reject(new Error('Failed to allocate local port for remote debugging'))
+        })
+        return
+      }
+      const { port } = address
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(port)
+      })
+    })
+  })
+}
+
+async function fetchJson(url, timeoutMs = 1_200) {
+  return await new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      const statusCode = Number(response.statusCode || 0)
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume()
+        reject(new Error(`HTTP ${statusCode}`))
+        return
+      }
+
+      const chunks = []
+      response.on('data', (chunk) => chunks.push(chunk))
+      response.on('error', reject)
+      response.on('end', () => {
+        try {
+          const body = Buffer.concat(chunks).toString('utf8')
+          resolve(JSON.parse(body))
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+
+    request.on('timeout', () => {
+      request.destroy(new Error('CDP probe timeout'))
+    })
+    request.on('error', reject)
+  })
+}
+
+async function waitForCdpEndpoint(cdpUrl, timeoutMs = CDP_CONNECT_TIMEOUT_MS) {
+  const versionEndpoint = `${cdpUrl}/json/version`
+  const startedAt = Date.now()
+  let lastError = 'unknown'
+  while ((Date.now() - startedAt) < timeoutMs) {
+    try {
+      const payload = await fetchJson(versionEndpoint, 1_000)
+      if (typeof payload?.webSocketDebuggerUrl === 'string' && payload.webSocketDebuggerUrl) {
+        return {
+          cdpUrl,
+          webSocketDebuggerUrl: payload.webSocketDebuggerUrl
+        }
+      }
+      lastError = 'CDP endpoint not ready'
+    } catch (error) {
+      lastError = makeErrorMessage(error)
+    }
+    await sleep(CDP_CONNECT_RETRY_INTERVAL_MS)
+  }
+  throw new Error(`Timed out waiting for CDP endpoint: ${cdpUrl} (${lastError})`)
+}
+
+async function terminateChildProcess(child) {
+  if (!child || !Number.isInteger(child.pid)) return
+  if (child.exitCode !== null || child.killed) return
+  const pid = Number(child.pid)
+  if (!Number.isInteger(pid) || pid <= 0) return
+
+  if (process.platform === 'win32') {
+    await new Promise((resolve) => {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      killer.on('error', () => resolve(undefined))
+      killer.on('close', () => resolve(undefined))
+    })
+    return
+  }
+
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // ignore process termination errors
+    }
+  }
+}
+
+async function terminateOwnedBrowserProcess(state) {
+  const child = state.launchedProcess
+  state.launchedProcess = null
+  state.launchedCdpUrl = null
+  await terminateChildProcess(child)
+}
+
 function getProfileState(profile) {
   let state = runtime.profiles.get(profile)
   if (!state) {
@@ -132,7 +256,9 @@ function getProfileState(profile) {
       pendingReadyTargets: new Map(),
       inflightRequestsByTarget: new Map(),
       traceStarted: false,
-      tracePath: null
+      tracePath: null,
+      launchedProcess: null,
+      launchedCdpUrl: null
     }
     runtime.profiles.set(profile, state)
   }
@@ -148,11 +274,44 @@ function clearProfilePages(state) {
   state.activeTargetId = null
 }
 
-async function attachExistingBrowserViaCdp(profileConfig, state) {
+function clearConnectedSession(state) {
+  state.browser = null
+  state.context = null
+  state.connectionMode = null
+  clearProfilePages(state)
+}
+
+function markSessionDisconnected(state) {
+  clearConnectedSession(state)
+  state.launchedProcess = null
+  state.launchedCdpUrl = null
+}
+
+function hasLiveContext(state) {
+  if (!state?.context) return false
+  if (state.connectionMode === 'cdp' && state.browser && typeof state.browser.isConnected === 'function') {
+    if (!state.browser.isConnected()) {
+      return false
+    }
+  }
+  try {
+    state.context.pages()
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function attachExistingBrowserViaCdp(profileConfig, browserConfig, state) {
   const cdpUrl = typeof profileConfig?.cdp_url === 'string' ? profileConfig.cdp_url.trim() : ''
   if (!cdpUrl) {
     throw new Error('cdp_url is required for attach mode')
   }
+  await terminateOwnedBrowserProcess(state)
+  await attachBrowserViaCdp(cdpUrl, browserConfig, state, null)
+}
+
+async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess) {
   const browser = await chromium.connectOverCDP(cdpUrl)
   const contexts = browser.contexts()
   const context = contexts[0] || null
@@ -162,13 +321,108 @@ async function attachExistingBrowserViaCdp(profileConfig, state) {
   state.browser = browser
   state.context = context
   state.connectionMode = 'cdp'
+  state.launchedProcess = launchedProcess
+  state.launchedCdpUrl = launchedProcess ? cdpUrl : null
   clearProfilePages(state)
+
+  const onSessionClosed = () => {
+    markSessionDisconnected(state)
+  }
+  browser.on('disconnected', onSessionClosed)
+  context.on('close', onSessionClosed)
+
   for (const page of context.pages()) {
     registerPage(state, page)
   }
   context.on('page', (page) => {
     registerPage(state, page)
   })
+
+  if (state.headers && typeof state.headers === 'object') {
+    await context.setExtraHTTPHeaders(state.headers).catch(() => undefined)
+  }
+  if (state.geolocation) {
+    await context.setGeolocation(state.geolocation).catch(() => undefined)
+    await context.grantPermissions(['geolocation']).catch(() => undefined)
+  }
+  if (state.media) {
+    for (const page of context.pages()) {
+      await page.emulateMedia({ colorScheme: state.media }).catch(() => undefined)
+    }
+  }
+  if (browserConfig?.allow_private_network === false) {
+    context.route('**', async (route) => {
+      try {
+        const url = route.request().url()
+        assertPrivateNetworkAllowed(url, browserConfig.allow_private_network)
+      } catch {
+        return route.abort()
+      }
+      return route.continue()
+    }).catch(() => undefined)
+  }
+  if (context.pages().length === 0) {
+    const page = await context.newPage()
+    registerPage(state, page)
+    await page.goto('about:blank').catch(() => undefined)
+  }
+}
+
+function buildChromeLaunchArgs(profileConfig, userDataDir, remoteDebuggingPort) {
+  const viewport = defaultViewport(profileConfig)
+  const args = [
+    `--remote-debugging-port=${remoteDebuggingPort}`,
+    '--remote-debugging-address=127.0.0.1',
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--new-window',
+    `--window-size=${viewport.width},${viewport.height}`
+  ]
+  if (profileConfig?.headless) {
+    args.push('--headless=new')
+  }
+  args.push('about:blank')
+  return args
+}
+
+async function launchExternalChromeViaCdp(profileName, profileConfig, browserConfig, state, paths) {
+  const executablePath = typeof profileConfig?.executable_path === 'string'
+    ? profileConfig.executable_path.trim()
+    : ''
+  if (!executablePath) {
+    throw new Error(`Profile "${profileName}" requires executable_path for launch mode`)
+  }
+
+  const userDataDir = (typeof profileConfig?.user_data_dir === 'string' && profileConfig.user_data_dir.trim())
+    ? profileConfig.user_data_dir.trim()
+    : profileUserDataDir(paths, profileName)
+  await ensureDir(userDataDir)
+
+  const remoteDebuggingPort = await findFreeTcpPort()
+  const cdpUrl = `http://127.0.0.1:${remoteDebuggingPort}`
+  const launchArgs = buildChromeLaunchArgs(profileConfig, userDataDir, remoteDebuggingPort)
+
+  const child = spawn(executablePath, launchArgs, {
+    stdio: 'ignore',
+    windowsHide: true,
+    detached: true
+  })
+  child.unref()
+
+  try {
+    const cdpReady = await waitForCdpEndpoint(cdpUrl)
+    const connectEndpoint =
+      typeof cdpReady?.webSocketDebuggerUrl === 'string' && cdpReady.webSocketDebuggerUrl
+        ? cdpReady.webSocketDebuggerUrl
+        : cdpUrl
+    await attachBrowserViaCdp(connectEndpoint, browserConfig, state, child)
+  } catch (error) {
+    await terminateChildProcess(child)
+    throw new Error(
+      `Failed to launch browser with remote debugging (${executablePath}): ${makeErrorMessage(error)}`
+    )
+  }
 }
 
 function attachPageListeners(state, page, targetId) {
@@ -283,98 +537,24 @@ function resolvePage(state, request) {
   return { page, targetId }
 }
 
-async function launchContext(profileName, profileConfig, browserConfig, paths, state) {
-  const userDataDir = (typeof profileConfig?.user_data_dir === 'string' && profileConfig.user_data_dir.trim())
-    ? profileConfig.user_data_dir.trim()
-    : profileUserDataDir(paths, profileName)
-  await ensureDir(userDataDir)
-
-  const viewport = defaultViewport(profileConfig)
-  const launchOptions = {
-    headless: Boolean(profileConfig?.headless),
-    viewport
-  }
-
-  const executablePath = typeof profileConfig?.executable_path === 'string'
-    ? profileConfig.executable_path.trim()
-    : ''
-  if (executablePath) {
-    launchOptions.executablePath = executablePath
-  }
-  if (profileConfig?.engine === 'chrome' && !profileConfig?.executable_path) {
-    launchOptions.channel = 'chrome'
-  }
-  if (state.headers && typeof state.headers === 'object') {
-    launchOptions.extraHTTPHeaders = state.headers
-  }
-  if (state.credentials) {
-    launchOptions.httpCredentials = state.credentials
-  }
-  if (state.geolocation) {
-    launchOptions.geolocation = state.geolocation
-    launchOptions.permissions = ['geolocation']
-  }
-  if (state.locale) {
-    launchOptions.locale = state.locale
-  }
-  if (state.timezone) {
-    launchOptions.timezoneId = state.timezone
-  }
-  if (state.device && devices[state.device]) {
-    Object.assign(launchOptions, devices[state.device])
-  }
-
-  const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
-  state.browser = null
-  state.context = context
-  state.connectionMode = 'persistent'
-  clearProfilePages(state)
-  for (const page of context.pages()) {
-    registerPage(state, page)
-  }
-  context.on('page', (page) => {
-    registerPage(state, page)
-  })
-
-  if (state.media) {
-    for (const page of context.pages()) {
-      await page.emulateMedia({ colorScheme: state.media }).catch(() => undefined)
-    }
-  }
-
-  if (browserConfig.allow_private_network === false) {
-    context.route('**', async (route) => {
-      try {
-        const url = route.request().url()
-        assertPrivateNetworkAllowed(url, browserConfig.allow_private_network)
-      } catch (error) {
-        return route.abort()
-      }
-      return route.continue()
-    }).catch(() => undefined)
-  }
-
-  if (context.pages().length === 0) {
-    const page = await context.newPage()
-    registerPage(state, page)
-    await page.goto('about:blank').catch(() => undefined)
-  }
-}
-
 async function ensureContext(profileName, profileConfig, browserConfig, paths) {
   const state = getProfileState(profileName)
+  if (state.context && !hasLiveContext(state)) {
+    clearConnectedSession(state)
+    await terminateOwnedBrowserProcess(state)
+  }
   if (!state.context) {
     const cdpUrl = typeof profileConfig?.cdp_url === 'string' ? profileConfig.cdp_url.trim() : ''
     if (cdpUrl) {
-      await attachExistingBrowserViaCdp(profileConfig, state)
+      await attachExistingBrowserViaCdp(profileConfig, browserConfig, state)
     } else {
       const executablePath = typeof profileConfig?.executable_path === 'string'
         ? profileConfig.executable_path.trim()
         : ''
       if (!executablePath) {
-        throw new Error('Profile must provide executable_path or cdp_url to control user browser')
+        throw new Error('Profile must set executable_path for external Chrome launch, or set cdp_url to attach an existing debug Chrome')
       }
-      await launchContext(profileName, profileConfig, browserConfig, paths, state)
+      await launchExternalChromeViaCdp(profileName, profileConfig, browserConfig, state, paths)
     }
     return state
   }
@@ -383,7 +563,11 @@ async function ensureContext(profileName, profileConfig, browserConfig, paths) {
 
 async function closeProfile(profileName) {
   const state = runtime.profiles.get(profileName)
-  if (!state || !state.context) return
+  if (!state) return
+  if (!state.context) {
+    await terminateOwnedBrowserProcess(state)
+    return
+  }
   if (state.connectionMode === 'cdp') {
     if (state.browser) {
       await state.browser.close().catch(() => undefined)
@@ -393,10 +577,8 @@ async function closeProfile(profileName) {
   } else {
     await state.context.close().catch(() => undefined)
   }
-  state.browser = null
-  state.context = null
-  state.connectionMode = null
-  clearProfilePages(state)
+  clearConnectedSession(state)
+  await terminateOwnedBrowserProcess(state)
 }
 
 function extractPageLinks(html, baseUrl, maxLinks = 30) {
@@ -1562,7 +1744,7 @@ async function handleAction(params) {
         cdp_url: cfg.cdp_url || null,
         executable_path: cfg.executable_path || null,
         headless: Boolean(cfg.headless),
-        running: Boolean(runtime.profiles.get(name)?.context),
+        running: hasLiveContext(runtime.profiles.get(name)),
         mode: runtime.profiles.get(name)?.connectionMode || null
       })),
       default_profile: browserConfig.default_profile,
@@ -1576,7 +1758,7 @@ async function handleAction(params) {
     const state = getProfileState(profileName)
     return {
       profile: profileName,
-      running: Boolean(state.context),
+      running: hasLiveContext(state),
       mode: state.connectionMode,
       active_target_id: state.activeTargetId,
       tabs: Array.from(state.pages.entries()).map(([targetId, page]) => ({
@@ -1605,7 +1787,7 @@ async function handleAction(params) {
     const hasExecutable = typeof profileConfig?.executable_path === 'string' && profileConfig.executable_path.trim().length > 0
     if (!hasCdp && !hasExecutable) {
       throw new Error(
-        `Profile "${profileName}" must set cdp_url (attach to existing browser) or executable_path (launch user browser).`
+        `Profile "${profileName}" must set executable_path (launch external Chrome with remote debugging) or cdp_url (attach existing debug Chrome).`
       )
     }
     await ensureContext(profileName, profileConfig, browserConfig, paths)

@@ -163,7 +163,7 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
     }
     let chunk_trimmed = chunk.trim();
     if base.is_empty() {
-        base.push_str(chunk_trimmed);
+        base.push_str(chunk);
         return;
     }
 
@@ -181,14 +181,21 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
 
     // Some providers stream partial_json as full snapshots at each delta.
     // If the incoming chunk is already a valid JSON object, prefer replacing
-    // current buffer to avoid corrupt concatenation like "}{".
+    // current buffer to avoid corrupt concatenation like "}{". 
     if chunk_trimmed.starts_with('{') && serde_json::from_str::<Value>(chunk_trimmed).is_ok() {
         *base = chunk_trimmed.to_string();
         return;
     }
 
     // Keep safe dedupe rules for incremental fragments.
+    if chunk == base.as_str() {
+        return;
+    }
     if chunk_trimmed == base.as_str() {
+        return;
+    }
+    if chunk.starts_with(base.as_str()) {
+        *base = chunk.to_string();
         return;
     }
     if chunk_trimmed.starts_with(base.as_str()) {
@@ -196,7 +203,7 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
         return;
     }
 
-    base.push_str(chunk_trimmed);
+    base.push_str(chunk);
 }
 
 fn extract_assistant_content_text(content: &Value) -> Option<String> {
@@ -484,14 +491,18 @@ impl LlmService {
                 }
 
                 if let Some(chunk_text) = choice.delta.content {
-                    let part = chunk_text.to_string();
-                    content.push_str(&part);
-                    callback(LlmStreamEvent::Content(part));
+                    if !chunk_text.is_empty() {
+                        let part = chunk_text.to_string();
+                        content.push_str(&part);
+                        callback(LlmStreamEvent::Content(part));
+                    }
                 }
 
                 if let Some(reasoning_text) = choice.delta.reasoning_content {
-                    reasoning.push_str(&reasoning_text);
-                    callback(LlmStreamEvent::Reasoning(reasoning_text));
+                    if !reasoning_text.is_empty() {
+                        reasoning.push_str(&reasoning_text);
+                        callback(LlmStreamEvent::Reasoning(reasoning_text));
+                    }
                 }
 
                 if let Some(tool_calls) = choice.delta.tool_calls {
@@ -642,16 +653,20 @@ impl LlmService {
 
                 if delta_type == "text_delta" {
                     if let Some(part) = delta.get("text").and_then(Value::as_str) {
-                        content.push_str(part);
-                        callback(LlmStreamEvent::Content(part.to_string()));
+                        if !part.is_empty() {
+                            content.push_str(part);
+                            callback(LlmStreamEvent::Content(part.to_string()));
+                        }
                     }
                     continue;
                 }
 
                 if delta_type == "thinking_delta" {
                     if let Some(part) = delta.get("thinking").and_then(Value::as_str) {
-                        reasoning.push_str(part);
-                        callback(LlmStreamEvent::Reasoning(part.to_string()));
+                        if !part.is_empty() {
+                            reasoning.push_str(part);
+                            callback(LlmStreamEvent::Reasoning(part.to_string()));
+                        }
                     }
                     continue;
                 }
@@ -947,4 +962,3 @@ impl LlmService {
         Ok(image_url.to_string())
     }
 }
-

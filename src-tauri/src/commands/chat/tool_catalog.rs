@@ -513,7 +513,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions."
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
             .to_string(),
         json!({
             "type": "object",
@@ -524,7 +524,10 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
                 },
                 "profile": { "type": "string" },
                 "target_id": { "type": "string" },
-                "params": { "type": "object" }
+                "params": {
+                    "type": "object",
+                    "description": "Action-specific parameters. For action=act, use {kind, ref|selector, ...}. For action=act_batch, use {actions:[{kind, ref|selector, ...}, ...], stop_on_error?}. Valid act kinds include: click|type|press|hover|scroll|select|wait|drag. Example: {\"action\":\"act_batch\",\"params\":{\"actions\":[{\"kind\":\"type\",\"ref\":\"e7\",\"text\":\"李佳琦\"},{\"kind\":\"click\",\"ref\":\"e8\"}]}}. Do not use actions[].action."
+                }
             },
             "required": ["action"]
         }),

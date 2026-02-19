@@ -195,7 +195,7 @@
             title="接管模式说明"
             type="info"
             :closable="false"
-            description="优先填写 CDP URL 来接管已打开的浏览器（需用 --remote-debugging-port 启动）。如果不填 CDP URL，则使用 Executable Path 启动浏览器。"
+            description="默认启动方式是外部 Chrome：使用 Executable Path 以 --remote-debugging-port + --user-data-dir + --window-size 启动后再自动接管。CDP URL 仅用于接管你手动启动的调试浏览器。"
             style="margin-bottom: 12px"
           />
 

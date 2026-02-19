@@ -215,7 +215,7 @@ pub fn format_launch_help(program: &str, args: &[String], stderr_excerpt: &str) 
         format!(" {}", args.join(" "))
     };
     format!(
-        "Failed to start browser sidecar.\nProgram: {}{}\nStderr: {}\nHints: run scripts/browser/prepare-sidecar.mjs and configure browser executable_path or cdp_url.",
+        "Failed to start browser sidecar.\nProgram: {}{}\nStderr: {}\nHints: run scripts/browser/prepare-sidecar.mjs and set browser executable_path (external Chrome launch + auto attach via --remote-debugging-port), or provide cdp_url for attach-only mode.",
         program,
         rendered_args,
         stderr_excerpt

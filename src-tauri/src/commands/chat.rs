@@ -534,6 +534,7 @@ Desktop automation policy (UFO-style): \
 Always discover controls before acting: get_desktop_app_info/list_windows -> select_application_window/select_window -> get_app_window_controls_info/get_controls(refresh=true) -> control action by exact id + exact name. \
 Use canonical action args: set_edit_text(text), keyboard_input(keys, control_focus), wheel_mouse_input(wheel_dist), select_application_window(id,name). \
 Browser policy: all browser lifecycle/navigation/page actions must use tool=browser only; never use desktop.launch_application or desktop.close_application for browsers. \
+For browser action=act or action=act_batch, action items must use field `kind` (not `action`). \
 Use click_on_coordinates only as fallback when the target control is missing from control list."
     } else {
         "Tool selection policy: \
@@ -708,52 +709,56 @@ async fn run_stream_round(
             },
             |event| match event {
                 LlmStreamEvent::Content(chunk) => {
-                    *seq_counter += 1;
-                    let seq = *seq_counter;
-                    let created_at = Utc::now().to_rfc3339();
-                    timeline_events.push(PendingTimelineEvent {
-                        turn_id: turn_id_for_stream.clone(),
-                        seq,
-                        event_type: TimelineEventType::AssistantText,
-                        tool_call_id: None,
-                        payload: json!({ "text": chunk.clone() }),
-                        created_at: created_at.clone(),
-                    });
-                    let _ = window_for_stream.emit(
-                        "chat-chunk",
-                        json!({
-                            "conversationId": conversation_id_for_stream.clone(),
-                            "turnId": turn_id_for_stream.clone(),
-                            "seq": seq,
-                            "eventType": "assistant_text",
-                            "createdAt": created_at,
-                            "chunk": chunk
-                        }),
-                    );
+                    if !chunk.is_empty() {
+                        *seq_counter += 1;
+                        let seq = *seq_counter;
+                        let created_at = Utc::now().to_rfc3339();
+                        timeline_events.push(PendingTimelineEvent {
+                            turn_id: turn_id_for_stream.clone(),
+                            seq,
+                            event_type: TimelineEventType::AssistantText,
+                            tool_call_id: None,
+                            payload: json!({ "text": chunk.clone() }),
+                            created_at: created_at.clone(),
+                        });
+                        let _ = window_for_stream.emit(
+                            "chat-chunk",
+                            json!({
+                                "conversationId": conversation_id_for_stream.clone(),
+                                "turnId": turn_id_for_stream.clone(),
+                                "seq": seq,
+                                "eventType": "assistant_text",
+                                "createdAt": created_at,
+                                "chunk": chunk
+                            }),
+                        );
+                    }
                 }
                 LlmStreamEvent::Reasoning(chunk) => {
-                    *seq_counter += 1;
-                    let seq = *seq_counter;
-                    let created_at = Utc::now().to_rfc3339();
-                    timeline_events.push(PendingTimelineEvent {
-                        turn_id: turn_id_for_stream.clone(),
-                        seq,
-                        event_type: TimelineEventType::AssistantReasoning,
-                        tool_call_id: None,
-                        payload: json!({ "text": chunk.clone() }),
-                        created_at: created_at.clone(),
-                    });
-                    let _ = window_for_stream.emit(
-                        "chat-reasoning",
-                        json!({
-                            "conversationId": conversation_id_for_stream.clone(),
-                            "turnId": turn_id_for_stream.clone(),
-                            "seq": seq,
-                            "eventType": "assistant_reasoning",
-                            "createdAt": created_at,
-                            "chunk": chunk
-                        }),
-                    );
+                    if !chunk.is_empty() {
+                        *seq_counter += 1;
+                        let seq = *seq_counter;
+                        let created_at = Utc::now().to_rfc3339();
+                        timeline_events.push(PendingTimelineEvent {
+                            turn_id: turn_id_for_stream.clone(),
+                            seq,
+                            event_type: TimelineEventType::AssistantReasoning,
+                            tool_call_id: None,
+                            payload: json!({ "text": chunk.clone() }),
+                            created_at: created_at.clone(),
+                        });
+                        let _ = window_for_stream.emit(
+                            "chat-reasoning",
+                            json!({
+                                "conversationId": conversation_id_for_stream.clone(),
+                                "turnId": turn_id_for_stream.clone(),
+                                "seq": seq,
+                                "eventType": "assistant_reasoning",
+                                "createdAt": created_at,
+                                "chunk": chunk
+                            }),
+                        );
+                    }
                 }
                 LlmStreamEvent::ToolCallDelta(delta) => {
                     if let Some(id) = delta

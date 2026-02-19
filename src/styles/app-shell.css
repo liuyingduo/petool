@@ -742,6 +742,78 @@ label {
   font-size: 12px;
 }
 
+.bubble :deep(.md-code-block) {
+  position: relative;
+  margin: 8px 0;
+}
+
+.bubble :deep(.md-code-block > pre) {
+  margin: 0;
+  padding-top: 36px;
+}
+
+.bubble :deep(.md-code-copy-btn) {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(30, 41, 59, 0.92);
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.bubble :deep(.md-code-copy-btn:hover) {
+  background: rgba(51, 65, 85, 0.95);
+  border-color: rgba(148, 163, 184, 0.75);
+}
+
+.bubble :deep(.md-code-copy-btn.copied) {
+  background: rgba(22, 101, 52, 0.92);
+  border-color: rgba(74, 222, 128, 0.7);
+  color: #dcfce7;
+}
+
+.bubble :deep(.svg-preview-block) {
+  margin: 8px 0;
+}
+
+.bubble :deep(.svg-preview-block .md-code-block) {
+  margin: 0;
+}
+
+.bubble :deep(.svg-preview-label) {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #57534e;
+}
+
+.bubble :deep(.svg-preview-canvas) {
+  margin-top: 6px;
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+  background: #fafaf9;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.bubble :deep(.svg-preview-image) {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 320px;
+  width: auto;
+  height: auto;
+}
+
 .tool-progress {
   margin-top: 8px;
 }

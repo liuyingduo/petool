@@ -1347,17 +1347,109 @@ onBeforeUnmount(() => {
   }
 })
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function isSvgCodeBlock(code: string, infostring?: string) {
+  const lang = (infostring || '').trim().toLowerCase()
+  if (lang === 'svg' || lang === 'image/svg+xml') return true
+  const trimmed = code.trim()
+  return /^<svg[\s>]/i.test(trimmed) && /<\/svg>\s*$/i.test(trimmed)
+}
+
+const markdownRenderer = new marked.Renderer()
+markdownRenderer.code = (code: string, infostring: string | undefined, escaped: boolean) => {
+  const language = (infostring || '').trim()
+  const languageClass = language ? ` class="language-${escapeHtml(language)}"` : ''
+  const safeCode = escaped ? code : escapeHtml(code)
+  const codeBlockHtml = `
+<div class="md-code-block">
+  <button class="md-code-copy-btn" type="button" data-action="copy-code">复制</button>
+  <pre><code${languageClass}>${safeCode}</code></pre>
+</div>`
+  if (!isSvgCodeBlock(code, infostring)) {
+    return codeBlockHtml
+  }
+
+  const svgSource = code.trim()
+  const previewSrc = `data:image/svg+xml;utf8,${encodeURIComponent(svgSource)}`
+  return `
+<div class="svg-preview-block">
+  ${codeBlockHtml}
+  <div class="svg-preview-label">SVG 预览</div>
+  <div class="svg-preview-canvas">
+    <img class="svg-preview-image" src="${previewSrc}" alt="SVG 预览" loading="lazy" />
+  </div>
+</div>`
+}
+
 function renderMarkdown(content: string) {
-  return marked.parse(content || '', { async: false }) as string
+  return marked.parse(content || '', { async: false, renderer: markdownRenderer }) as string
 }
 
 function isExternalHttpUrl(value: string) {
   return /^https?:\/\//i.test(value)
 }
 
+async function copyTextToClipboard(text: string) {
+  if (!text) return false
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    textarea.style.pointerEvents = 'none'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    let copied = false
+    try {
+      copied = document.execCommand('copy')
+    } catch {
+      copied = false
+    }
+    document.body.removeChild(textarea)
+    return copied
+  }
+}
+
 async function handleMarkdownLinkClick(event: MouseEvent) {
   const target = event.target
   if (!(target instanceof HTMLElement)) return
+
+  const copyTrigger = target.closest('[data-action="copy-code"]') as HTMLButtonElement | null
+  if (copyTrigger) {
+    event.preventDefault()
+    event.stopPropagation()
+    const block = copyTrigger.closest('.md-code-block') as HTMLElement | null
+    const codeElement = block?.querySelector('code') as HTMLElement | null
+    const content = codeElement?.textContent || ''
+    if (!content.trim()) {
+      ElMessage.warning('没有可复制的代码')
+      return
+    }
+    const copied = await copyTextToClipboard(content)
+    if (!copied) {
+      ElMessage.error('复制失败')
+      return
+    }
+    copyTrigger.textContent = '已复制'
+    copyTrigger.classList.add('copied')
+    window.setTimeout(() => {
+      copyTrigger.textContent = '复制'
+      copyTrigger.classList.remove('copied')
+    }, 1200)
+    return
+  }
 
   const anchor = target.closest('a') as HTMLAnchorElement | null
   if (!anchor) return
