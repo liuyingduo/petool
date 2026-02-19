@@ -1,9 +1,9 @@
 ﻿"""
-AI 璇锋眰涓浆浠ｇ悊妯″潡锛圤penAI SDK 鐗堬級
-- 瀹屽叏鍏煎 OpenAI Chat Completions API 鏍煎紡
-- 浣跨敤 openai.AsyncOpenAI 瀹㈡埛绔浆鍙戝埌鍚勪笂娓稿巶鍟?
-- 鏀寔娴佸紡锛坰tream=true锛夊拰闈炴祦寮忚姹?
-- 鑷姩璁￠噺 Token锛屾墸鍑忕敤鎴蜂綑棰濓紝鍐欏叆鐢ㄩ噺璁板綍
+AI 请求中转代理模块（OpenAI SDK 版）
+- 完全兼容 OpenAI Chat Completions API 格式
+- 使用 openai.AsyncOpenAI 客户端转发到各上游厂商
+- 支持流式（stream=true）和非流式请求
+- 自动计量 Token，扣减用户余额，并写入用量记录
 """
 import asyncio
 import json
@@ -19,9 +19,9 @@ from openai import AsyncOpenAI
 from auth_utils import get_current_user
 from database import get_database
 
-router = APIRouter(prefix="/v1", tags=["AI 涓浆浠ｇ悊"])
+router = APIRouter(prefix="/v1", tags=["AI 中转代理"])
 
-# 鈹€鈹€鈹€ 涓婃父鍘傚晢閰嶇疆锛堟湇鍔＄鎸佹湁 Key锛岀敤鎴蜂笉鍙锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ---------- 上游厂商客户端配置（服务端持有 Key，用户不可见） ----------
 
 def _glm_client() -> AsyncOpenAI:
     return AsyncOpenAI(
@@ -36,7 +36,7 @@ def _ark_client() -> AsyncOpenAI:
     )
 
 def _minimax_client() -> AsyncOpenAI:
-    # MiniMax 鍏煎 OpenAI 鏍煎紡锛屼娇鐢ㄥ叾 ChatCompletion 绔偣
+    # MiniMax 兼容 OpenAI 格式，使用其 ChatCompletion 端点
     return AsyncOpenAI(
         api_key=os.getenv("MINIMAX_API_KEY", ""),
         base_url=os.getenv("MINIMAX_API_BASE", "https://api.minimax.chat/v1"),
@@ -56,17 +56,17 @@ def _get_client(model: str) -> AsyncOpenAI:
     key = model.strip().lower()
     if key.startswith("minimax") or key.startswith("abab"):
         return _minimax_client()
-    if key.startswith("doubao") or key.startswith("ep-"):   # ep-* 鏄?Ark endpoint ID
+    if key.startswith("doubao") or key.startswith("ep-"):   # ep-* 是 Ark endpoint ID
         return _ark_client()
     if key.startswith("glm"):
         return _glm_client()
     if key.startswith("gpt"):
         return _openai_client()
-    # 榛樿璧?GLM
+    # 默认走 GLM
     return _glm_client()
 
 
-# 鈹€鈹€鈹€ Token 璐圭巼琛紙key 缁熶竴灏忓啓锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ---------- Token 费率表（key 统一小写） ----------
 
 TOKEN_COST_MULTIPLIER: dict[str, float] = {
     "gpt-4o": 2.0,
@@ -87,7 +87,7 @@ def _get_cost_multiplier(model: str) -> float:
     return TOKEN_COST_MULTIPLIER.get(model.strip().lower(), 1.0)
 
 
-# 鈹€鈹€鈹€ Token 璁￠噺 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ---------- Token 计量 ----------
 
 def _count_tokens_approx(text: str) -> int:
     try:
@@ -120,7 +120,7 @@ async def _check_balance(user_id: str, estimated_cost: int):
 async def _deduct_tokens(
     user_id: str, model: str,
     prompt_tokens: int, completion_tokens: int,
-    task_type: str = "瀵硅瘽"
+    task_type: str = "对话"
 ):
     db = get_database()
     total = prompt_tokens + completion_tokens
@@ -142,7 +142,7 @@ async def _deduct_tokens(
     )
 
 
-# 鈹€鈹€鈹€ 涓昏矾鐢憋細POST /v1/chat/completions 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ---------- 主路由：POST /v1/chat/completions ----------
 
 @router.post("/chat/completions", summary="Chat completions proxy")
 async def chat_completions(request: Request, current_user: dict = Depends(get_current_user)):
@@ -164,13 +164,13 @@ async def chat_completions(request: Request, current_user: dict = Depends(get_cu
         extra_body_payload["reasoning_split"] = True
         passthrough_kwargs["extra_body"] = extra_body_payload
 
-    # 棰勪及杈撳叆 token 骞舵鏌ヤ綑棰?
+    # 预估输入 token 并检查余额
     prompt_tokens = _count_tokens_approx(_extract_text_from_messages(messages))
     await _check_balance(user_id, prompt_tokens)
 
     client = _get_client(model)
 
-    # 鈹€鈹€ 娴佸紡鍝嶅簲 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ---------- 流式响应 ----------
     if is_stream:
         async def event_generator():
             completion_text = ""
@@ -212,7 +212,7 @@ async def chat_completions(request: Request, current_user: dict = Depends(get_cu
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    # 鈹€鈹€ 闈炴祦寮忓搷搴?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ---------- 非流式响应 ----------
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -221,7 +221,7 @@ async def chat_completions(request: Request, current_user: dict = Depends(get_cu
             **passthrough_kwargs,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"涓婃父璇锋眰澶辫触: {e}")
+        raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
 
     usage = response.usage
     comp_tokens = usage.completion_tokens if usage else _count_tokens_approx(
