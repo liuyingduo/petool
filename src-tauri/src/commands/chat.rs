@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::{Emitter, State, Window};
+use tauri_plugin_notification::NotificationExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -3970,6 +3971,34 @@ pub async fn send_message(
     Ok(response)
 }
 
+fn maybe_notify_stream_end(window: &Window, conversation_id: &str) {
+    let focused = window.is_focused().unwrap_or(true);
+    if focused {
+        return;
+    }
+
+    if let Err(error) = window
+        .notification()
+        .builder()
+        .title("PETool")
+        .body("AI 回复已结束")
+        .show()
+    {
+        eprintln!(
+            "failed to send stream end notification for conversation {}: {}",
+            conversation_id, error
+        );
+    }
+}
+
+fn emit_chat_end_with_notification(window: &Window, conversation_id: &str) -> Result<(), String> {
+    window
+        .emit("chat-end", json!({ "conversationId": conversation_id }))
+        .map_err(|e| e.to_string())?;
+    maybe_notify_stream_end(window, conversation_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn stream_message(
     state: State<'_, AppState>,
@@ -4038,9 +4067,7 @@ pub async fn stream_message(
 
         loop {
             if stop_flag.load(Ordering::Relaxed) {
-                window
-                    .emit("chat-end", json!({ "conversationId": conversation_id }))
-                    .map_err(|e| e.to_string())?;
+                emit_chat_end_with_notification(&window, &conversation_id)?;
                 return Ok(());
             }
 
@@ -4124,9 +4151,7 @@ pub async fn stream_message(
                     assistant_reasoning,
                 )
                 .await?;
-                window
-                    .emit("chat-end", json!({ "conversationId": conversation_id }))
-                    .map_err(|e| e.to_string())?;
+                emit_chat_end_with_notification(&window, &conversation_id)?;
                 return Ok(());
             }
 
@@ -4140,9 +4165,7 @@ pub async fn stream_message(
                     assistant_reasoning.clone(),
                 )
                 .await?;
-                window
-                    .emit("chat-end", json!({ "conversationId": conversation_id }))
-                    .map_err(|e| e.to_string())?;
+                emit_chat_end_with_notification(&window, &conversation_id)?;
                 return Ok(());
             }
 
@@ -4212,9 +4235,7 @@ pub async fn stream_message(
                 .await?;
                 insert_message(&pool, &conversation_id, "assistant", guard_text, None, None)
                     .await?;
-                window
-                    .emit("chat-end", json!({ "conversationId": conversation_id }))
-                    .map_err(|e| e.to_string())?;
+                emit_chat_end_with_notification(&window, &conversation_id)?;
                 return Ok(());
             }
 
@@ -4378,9 +4399,7 @@ pub async fn stream_message(
             }
 
             if cancelled_during_tools {
-                window
-                    .emit("chat-end", json!({ "conversationId": conversation_id }))
-                    .map_err(|e| e.to_string())?;
+                emit_chat_end_with_notification(&window, &conversation_id)?;
                 return Ok(());
             }
         }
@@ -4389,7 +4408,7 @@ pub async fn stream_message(
 
     clear_stream_stop_flag(&conversation_id).await;
     if result.is_err() {
-        let _ = window.emit("chat-end", json!({ "conversationId": conversation_id }));
+        let _ = emit_chat_end_with_notification(&window, &conversation_id);
     }
     result
 }

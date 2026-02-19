@@ -335,7 +335,8 @@ async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess
     registerPage(state, page)
   }
   context.on('page', (page) => {
-    registerPage(state, page)
+    const targetId = registerPage(state, page)
+    void maybeActivatePageFromOpener(state, targetId, page)
   })
 
   if (state.headers && typeof state.headers === 'object') {
@@ -494,6 +495,12 @@ function attachPageListeners(state, page, targetId) {
     }
   })
 
+  page.on('popup', (popupPage) => {
+    const popupTargetId = registerPage(state, popupPage)
+    if (state.activeTargetId !== targetId) return
+    void activateTargetPage(state, popupTargetId, popupPage)
+  })
+
   page.on('close', () => {
     state.pages.delete(targetId)
     state.pageIds.delete(page)
@@ -505,6 +512,25 @@ function attachPageListeners(state, page, targetId) {
       state.activeTargetId = next
     }
   })
+}
+
+async function activateTargetPage(state, targetId, page) {
+  if (!targetId || !page) return
+  state.activeTargetId = targetId
+  markTargetNeedsReady(state, targetId)
+  await page.bringToFront().catch(() => undefined)
+}
+
+async function maybeActivatePageFromOpener(state, targetId, page) {
+  try {
+    const opener = await page.opener()
+    if (!opener) return
+    const openerTargetId = state.pageIds.get(opener)
+    if (!openerTargetId || openerTargetId !== state.activeTargetId) return
+    await activateTargetPage(state, targetId, page)
+  } catch {
+    // ignore opener checks for pages where this is unavailable
+  }
 }
 
 function registerPage(state, page) {

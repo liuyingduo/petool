@@ -322,10 +322,10 @@ pub async fn get_run(pool: &SqlitePool, run_id: &str) -> Result<Option<Scheduler
 }
 
 pub async fn next_wake_at(pool: &SqlitePool) -> Result<Option<String>, String> {
-    sqlx::query_scalar::<_, Option<String>>(
+    sqlx::query_scalar::<_, String>(
         "SELECT next_run_at FROM scheduler_jobs WHERE enabled = 1 AND next_run_at IS NOT NULL ORDER BY next_run_at ASC LIMIT 1",
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())
 }
