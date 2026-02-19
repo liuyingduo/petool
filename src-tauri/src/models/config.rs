@@ -90,6 +90,14 @@ fn default_clawhub_api_base_option() -> Option<String> {
     Some(default_clawhub_api_base())
 }
 
+fn default_petool_api_base() -> String {
+    "http://localhost:8000".to_string()
+}
+
+fn default_petool_api_base_option() -> Option<String> {
+    Some(default_petool_api_base())
+}
+
 fn default_ark_api_base() -> String {
     "https://ark.cn-beijing.volces.com/api/v3".to_string()
 }
@@ -158,6 +166,12 @@ fn default_desktop_screenshot_keep_count() -> usize {
 pub struct Config {
     pub api_key: Option<String>,
     pub api_base: Option<String>,
+    /// Petool 中转后端地址（默认 http://localhost:8000，部署后改为生产地址）
+    #[serde(default = "default_petool_api_base_option")]
+    pub petool_api_base: Option<String>,
+    /// 用户登录后的 JWT Token（登录成功后写入，退出登录时清空）
+    #[serde(default)]
+    pub petool_token: Option<String>,
     #[serde(default)]
     pub clawhub_api_key: Option<String>,
     #[serde(default = "default_clawhub_api_base_option")]
@@ -478,6 +492,8 @@ impl Default for Config {
         Self {
             api_key: None,
             api_base: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
+            petool_api_base: Some(default_petool_api_base()),
+            petool_token: None,
             clawhub_api_key: None,
             clawhub_api_base: Some(default_clawhub_api_base()),
             ark_api_key: None,

@@ -6,7 +6,7 @@ use crate::models::config::{
 };
 use crate::services::desktop::{self, types::DesktopToolRequest};
 use crate::services::llm::{
-    ChatMessage, ChatTool, ChatToolCall, ChatToolFunction, LlmService, LlmStreamEvent,
+    reasoning_details_from_text, ChatMessage, ChatTool, ChatToolCall, ChatToolFunction, LlmService, LlmStreamEvent,
     LlmStreamResult,
 };
 use crate::services::mcp_client::{HttpTransport, McpClient, StdioTransport};
@@ -365,6 +365,13 @@ async fn load_conversation_context(
                 let tool_calls = tool_calls_raw
                     .as_deref()
                     .and_then(|value| serde_json::from_str::<Vec<ChatToolCall>>(value).ok());
+                let reasoning = reasoning_raw
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
+                let reasoning_details =
+                    reasoning.as_deref().and_then(reasoning_details_from_text);
 
                 messages.push(ChatMessage {
                     role,
@@ -375,11 +382,8 @@ async fn load_conversation_context(
                     },
                     tool_calls,
                     tool_call_id: None,
-                    reasoning: reasoning_raw
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|value| value.to_string()),
+                    reasoning_details,
+                    reasoning,
                 });
             }
             "tool" => {
@@ -398,6 +402,7 @@ async fn load_conversation_context(
                     content: Some(content),
                     tool_calls: None,
                     tool_call_id,
+                    reasoning_details: None,
                     reasoning: None,
                 });
             }
@@ -407,6 +412,7 @@ async fn load_conversation_context(
                     content: Some(content),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_details: None,
                     reasoning: None,
                 });
             }
@@ -462,6 +468,19 @@ fn first_non_empty(values: Vec<Option<String>>) -> Option<String> {
 }
 
 fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, String> {
+    // ── Petool 中转优先 ───────────────────────────────────────────────
+    // 如果用户已登录（有 petool_token），所有请求统一走 petool 中转后端。
+    // 此时用 JWT 作为 api_key，中转服务会用服务器侧的 API Key 调用上游。
+    if let Some(token) = config.petool_token.as_deref().filter(|t| !t.is_empty()) {
+        let base = config
+            .petool_api_base
+            .clone()
+            .unwrap_or_else(|| "http://localhost:8000".to_string());
+        let proxy_base = format!("{}/v1", base.trim_end_matches('/'));
+        return Ok(LlmService::new(token.to_string(), Some(proxy_base)));
+    }
+
+    // ── 未登录：回退到用户自配置的 API Key（向后兼容）────────────────
     match detect_text_model_provider(model) {
         TextModelProvider::Glm => {
             let api_key = first_non_empty(vec![
@@ -469,7 +488,7 @@ fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, 
                 env_value("GLM_API_KEY"),
                 env_value("OPENAI_API_KEY"),
             ])
-            .ok_or_else(|| "GLM API key not set".to_string())?;
+            .ok_or_else(|| "请先登录账号，或在设置中填写 GLM API Key".to_string())?;
             Ok(LlmService::new(
                 api_key,
                 Some(DEFAULT_GLM_API_BASE.to_string()),
@@ -482,7 +501,7 @@ fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, 
                 env_value("DOUBAO_API_KEY"),
                 config.api_key.clone(),
             ])
-            .ok_or_else(|| "Doubao API key not set".to_string())?;
+            .ok_or_else(|| "请先登录账号，或在设置中填写 Doubao API Key".to_string())?;
             Ok(LlmService::new(
                 api_key,
                 Some(DEFAULT_ARK_API_BASE.to_string()),
@@ -495,7 +514,7 @@ fn resolve_text_llm_service(config: &Config, model: &str) -> Result<LlmService, 
                 env_value("OPENAI_API_KEY"),
                 env_value("ANTHROPIC_API_KEY"),
             ])
-            .ok_or_else(|| "MiniMax API key not set".to_string())?;
+            .ok_or_else(|| "请先登录账号，或在设置中填写 MiniMax API Key".to_string())?;
             Ok(LlmService::new(
                 api_key,
                 Some(DEFAULT_MINIMAX_OPENAI_API_BASE.to_string()),
@@ -536,6 +555,7 @@ fn prepend_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<
             content: Some(trimmed.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
             reasoning: None,
         },
     );
@@ -567,6 +587,7 @@ Use workspace_list_directory only for quick non-recursive inspection of one dire
             content: Some(guidance.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
             reasoning: None,
         },
     );
@@ -585,6 +606,7 @@ fn prepend_skills_usage_guidance(messages: &mut Vec<ChatMessage>, skills_guidanc
             content: Some(trimmed.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
             reasoning: None,
         },
     );
@@ -949,6 +971,7 @@ async fn persist_tool_result_message(
         content: Some(result_text),
         tool_calls: None,
         tool_call_id: Some(tool_call.id.clone()),
+        reasoning_details: None,
         reasoning: None,
     });
 
@@ -1104,6 +1127,7 @@ fn push_background_tool_result_message(
         content: Some(result_text),
         tool_calls: None,
         tool_call_id: Some(tool_call.id.clone()),
+        reasoning_details: None,
         reasoning: None,
     });
 }
@@ -1173,6 +1197,7 @@ pub(crate) async fn run_agent_turn_background(
         content: Some(content),
         tool_calls: None,
         tool_call_id: None,
+        reasoning_details: None,
         reasoning: None,
     });
 
@@ -1207,6 +1232,10 @@ pub(crate) async fn run_agent_turn_background(
         } else {
             Some(stream_result.reasoning.clone())
         };
+        let assistant_reasoning_details = stream_result
+            .reasoning_details
+            .clone()
+            .or_else(|| assistant_reasoning.as_deref().and_then(reasoning_details_from_text));
 
         if stream_result.tool_calls.is_empty() {
             if request.persist_main_context {
@@ -1255,6 +1284,7 @@ pub(crate) async fn run_agent_turn_background(
             },
             tool_calls: Some(stream_result.tool_calls.clone()),
             tool_call_id: None,
+            reasoning_details: assistant_reasoning_details,
             reasoning: assistant_reasoning,
         });
 
@@ -3353,6 +3383,7 @@ async fn execute_core_task(
                 content: Some(prompt.clone()),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_details: None,
                 reasoning: None,
             }],
         )
@@ -4092,6 +4123,10 @@ pub async fn stream_message(
             } else {
                 Some(stream_result.reasoning.clone())
             };
+            let assistant_reasoning_details = stream_result
+                .reasoning_details
+                .clone()
+                .or_else(|| assistant_reasoning.as_deref().and_then(reasoning_details_from_text));
 
             if stream_result.cancelled {
                 for tool_call in &stream_result.tool_calls {
@@ -4190,6 +4225,7 @@ pub async fn stream_message(
                 },
                 tool_calls: Some(stream_result.tool_calls.clone()),
                 tool_call_id: None,
+                reasoning_details: assistant_reasoning_details,
                 reasoning: if stream_result.reasoning.trim().is_empty() {
                     None
                 } else {

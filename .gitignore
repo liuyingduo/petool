@@ -33,3 +33,4 @@ src-tauri/binaries/browser-node*
 nul
 tmp/
 tmp-clawhub-assets/
+*.pyc

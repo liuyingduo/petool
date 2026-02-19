@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 export interface Config {
   api_key?: string
   api_base?: string
+  petool_token?: string
+  petool_api_base?: string
   clawhub_api_key?: string
   clawhub_api_base?: string
   ark_api_key?: string

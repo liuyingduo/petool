@@ -6,112 +6,24 @@
     :close-on-click-modal="false"
   >
     <el-tabs v-model="activeTab">
-      <!-- Model Settings -->
-      <el-tab-pane label="Model Configuration" name="api">
-        <el-form :model="localConfig" label-width="140px">
-          <el-alert
-            title="Endpoint Is Built-in"
-            type="info"
-            :closable="false"
-            description="API base URLs are fixed in code. You only need to configure API keys and select models."
-            style="margin-bottom: 14px"
-          />
-
-          <el-divider content-position="left">API Keys</el-divider>
-
-          <el-form-item label="GLM API Key">
-            <el-input
-              v-model="localConfig.api_key"
-              type="password"
-              placeholder="Required for GLM text models"
-              show-password
-            />
-          </el-form-item>
-
-          <el-form-item label="Doubao API Key">
-            <el-input
-              v-model="localConfig.ark_api_key"
-              type="password"
-              placeholder="Required for Doubao text/image/video models"
-              show-password
-            />
-          </el-form-item>
-
-          <el-form-item label="MiniMax API Key">
-            <el-input
-              v-model="localConfig.minimax_api_key"
-              type="password"
-              placeholder="Required for MiniMax text models"
-              show-password
-            />
-          </el-form-item>
-
-          <el-form-item label="ClawHub API Key">
-            <el-input
-              v-model="localConfig.clawhub_api_key"
-              type="password"
-              placeholder="Optional (for skills ecosystem)"
-              show-password
-            />
-          </el-form-item>
-
-          <el-form-item label="Text Model">
-            <el-select v-model="localConfig.model" style="width: 100%" filterable allow-create default-first-option>
-              <el-option label="GLM-5 (Recommended)" value="glm-5" />
-              <el-option label="Doubao Seed 1.6 Thinking (Recommended)" value="doubao-seed-1-6-thinking-250715" />
-              <el-option label="MiniMax M2.5 (Recommended)" value="MiniMax-M2.5" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="Image Generation Model">
-            <el-select v-model="localConfig.image_model" style="width: 100%" filterable allow-create default-first-option>
-              <el-option label="Doubao Seedream 4.5 (Recommended)" value="doubao-seedream-4-5-251128" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="Image Understanding Model">
-            <el-select
-              v-model="localConfig.image_understand_model"
-              style="width: 100%"
-              filterable
-              allow-create
-              default-first-option
-            >
-              <el-option label="GLM-4.6V (Recommended)" value="glm-4.6v" />
-              <el-option label="Doubao Vision" value="doubao-vision-pro-32k" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="Video Generation Model">
-            <el-select v-model="localConfig.video_model" style="width: 100%" filterable allow-create default-first-option>
-              <el-option label="Doubao Seedance 1.0 Pro (Recommended)" value="doubao-seedance-1-0-pro-250528" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="System Prompt">
-            <el-input
-              v-model="localConfig.system_prompt"
-              type="textarea"
-              :rows="4"
-              placeholder="Optional system prompt for assistant behavior"
-            />
-          </el-form-item>
-
-          <el-form-item label="Work Directory">
-            <el-input
-              v-model="localConfig.work_directory"
-              placeholder="Select your project directory"
-              readonly
-            >
-              <template #append>
-                <el-button @click="handleSelectFolder">
-                  <el-icon><Folder /></el-icon>
-                </el-button>
-              </template>
-            </el-input>
-          </el-form-item>
-        </el-form>
+      <!-- Account / Model status -->
+      <el-tab-pane label="模型与账户" name="account">
+        <el-alert
+          title="AI 请求由 Petool 中转服务统一处理"
+          type="success"
+          :closable="false"
+          description="所有 AI 对话均通过您的账户 Token 走中转后端，无需填写 API Key。请前往「账户」页面查看余额和用量。"
+          style="margin-bottom: 20px"
+        />
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="登录状态">
+            {{ configStore.config.petool_token ? '✅ 已登录' : '❌ 未登录，请前往账户页登录' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="文本模型">{{ configStore.config.model || '未设置' }}</el-descriptions-item>
+          <el-descriptions-item label="中转服务地址">{{ configStore.config.petool_api_base || 'http://localhost:8000' }}</el-descriptions-item>
+        </el-descriptions>
       </el-tab-pane>
+
       <!-- Appearance -->
       <el-tab-pane label="Appearance" name="appearance">
         <el-form label-width="120px">
@@ -427,7 +339,7 @@ import {
   type McpServerConfig
 } from '@/stores/config'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderOpened, Plus, Delete, RefreshRight } from '@element-plus/icons-vue'
+import { FolderOpened, Plus, Delete, RefreshRight } from '@element-plus/icons-vue'
 import { invoke } from '@tauri-apps/api/core'
 import AutomationPanel from './AutomationPanel.vue'
 
@@ -770,16 +682,7 @@ watch(() => props.modelValue, (val) => {
   }
 })
 
-async function handleSelectFolder() {
-  try {
-    const path = await invoke<string | null>('select_folder')
-    if (path) {
-      localConfig.value.work_directory = path
-    }
-  } catch (error) {
-    ElMessage.error('Failed to select folder')
-  }
-}
+
 
 async function handleSave() {
   saving.value = true

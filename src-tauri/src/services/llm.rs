@@ -17,8 +17,24 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ChatToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_details: Option<Vec<ChatReasoningDetail>>,
     #[serde(skip_serializing, skip_deserializing, default)]
     pub reasoning: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChatReasoningDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub detail_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +74,8 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ChatTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<Value>,
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub tool_stream: Option<bool>,
 }
@@ -89,6 +107,8 @@ struct OpenAiCompatStreamDelta {
     content: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning_details: Option<Vec<ChatReasoningDetail>>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiCompatToolCallChunk>>,
 }
@@ -144,6 +164,7 @@ pub enum LlmStreamEvent {
 pub struct LlmStreamResult {
     pub content: String,
     pub reasoning: String,
+    pub reasoning_details: Option<Vec<ChatReasoningDetail>>,
     pub tool_calls: Vec<ChatToolCall>,
     pub cancelled: bool,
 }
@@ -202,6 +223,66 @@ fn append_tool_arguments_chunk(base: &mut String, chunk: &str) {
     }
 
     base.push_str(chunk);
+}
+
+fn append_reasoning_chunk(base: &mut String, chunk: &str) -> Option<String> {
+    if chunk.is_empty() {
+        return None;
+    }
+    if base.is_empty() {
+        base.push_str(chunk);
+        return Some(chunk.to_string());
+    }
+    if chunk == base.as_str() {
+        return None;
+    }
+    if chunk.starts_with(base.as_str()) {
+        let delta = chunk[base.len()..].to_string();
+        *base = chunk.to_string();
+        if delta.is_empty() {
+            return None;
+        }
+        return Some(delta);
+    }
+    base.push_str(chunk);
+    Some(chunk.to_string())
+}
+
+fn extract_reasoning_text_from_details(details: Option<&[ChatReasoningDetail]>) -> Option<String> {
+    let details = details?;
+    let text = details
+        .iter()
+        .filter_map(|detail| detail.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+pub fn reasoning_details_from_text(text: &str) -> Option<Vec<ChatReasoningDetail>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(vec![ChatReasoningDetail {
+        text: Some(trimmed.to_string()),
+        detail_type: Some("reasoning.text".to_string()),
+        format: Some("MiniMax-response-v1".to_string()),
+        id: Some("reasoning-text-1".to_string()),
+        index: Some(0),
+    }])
+}
+
+fn minimax_reasoning_split_extra_body(model: &str) -> Option<Value> {
+    if is_minimax_model(model) {
+        Some(json!({ "reasoning_split": true }))
+    } else {
+        None
+    }
 }
 
 fn extract_assistant_content_text(content: &Value) -> Option<String> {
@@ -265,6 +346,7 @@ fn merge_leading_system_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage>
             content: Some(merged_parts.join("\n\n")),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
             reasoning: None,
         });
     }
@@ -324,6 +406,7 @@ impl LlmService {
             stream: false,
             tools: None,
             tool_choice: None,
+            extra_body: minimax_reasoning_split_extra_body(model),
             // tool_stream: None,
         };
 
@@ -416,6 +499,7 @@ impl LlmService {
                 tools.as_ref().map(|_| "auto".to_string())
             },
             tools: tools.clone(),
+            extra_body: minimax_reasoning_split_extra_body(model),
             // Some OpenAI-compatible providers (including MiniMax /v1) reject tool_stream.
             // tool_stream: None,
         };
@@ -486,9 +570,20 @@ impl LlmService {
                 }
 
                 if let Some(reasoning_text) = choice.delta.reasoning_content {
-                    if !reasoning_text.is_empty() {
-                        reasoning.push_str(&reasoning_text);
-                        callback(LlmStreamEvent::Reasoning(reasoning_text));
+                    if let Some(delta_reasoning) = append_reasoning_chunk(&mut reasoning, &reasoning_text)
+                    {
+                        callback(LlmStreamEvent::Reasoning(delta_reasoning));
+                    }
+                }
+
+                if let Some(details) = choice.delta.reasoning_details {
+                    for detail in details {
+                        if let Some(part) = detail.text.as_deref() {
+                            if let Some(delta_reasoning) = append_reasoning_chunk(&mut reasoning, part)
+                            {
+                                callback(LlmStreamEvent::Reasoning(delta_reasoning));
+                            }
+                        }
                     }
                 }
 
@@ -545,9 +640,11 @@ impl LlmService {
             })
             .collect();
 
+        let reasoning_details = reasoning_details_from_text(&reasoning);
         Ok(LlmStreamResult {
             content,
             reasoning,
+            reasoning_details,
             tool_calls,
             cancelled,
         })
@@ -702,9 +799,11 @@ impl LlmService {
             })
             .collect::<Vec<_>>();
 
+        let reasoning_details = reasoning_details_from_text(&reasoning);
         Ok(LlmStreamResult {
             content,
             reasoning,
+            reasoning_details,
             tool_calls,
             cancelled,
         })
@@ -735,14 +834,20 @@ impl LlmService {
             let mut content_blocks: Vec<Value> = Vec::new();
 
             if role == "assistant" {
-                if let Some(reasoning_text) = message.reasoning {
-                    let trimmed = reasoning_text.trim();
-                    if !trimmed.is_empty() {
-                        content_blocks.push(json!({
-                            "type": "thinking",
-                            "thinking": trimmed
-                        }));
-                    }
+                if let Some(reasoning_text) = message
+                    .reasoning
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string())
+                    .or_else(|| {
+                        extract_reasoning_text_from_details(message.reasoning_details.as_deref())
+                    })
+                {
+                    content_blocks.push(json!({
+                        "type": "thinking",
+                        "thinking": reasoning_text
+                    }));
                 }
                 if let Some(text) = message.content {
                     let trimmed = text.trim();

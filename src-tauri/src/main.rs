@@ -7,7 +7,7 @@ mod services;
 mod state;
 mod utils;
 
-use commands::{chat, config, fs, mcp, scheduler, skills};
+use commands::{chat, config, fs, mcp, petool_account, scheduler, skills};
 use models::config::{AutomationCloseBehavior, Config};
 use services::database::Database;
 use services::mcp_client::McpManager;
@@ -209,6 +209,17 @@ async fn main() {
             scheduler::scheduler_run_heartbeat_now,
             scheduler::scheduler_list_runs,
             scheduler::scheduler_get_run,
+            // Petool 账户命令
+            petool_account::petool_login,
+            petool_account::petool_register,
+            petool_account::petool_logout,
+            petool_account::petool_is_logged_in,
+            petool_account::petool_get_profile,
+            petool_account::petool_get_quota,
+            petool_account::petool_get_usage,
+            petool_account::petool_get_orders,
+            petool_account::petool_create_order,
+            petool_account::petool_query_order,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

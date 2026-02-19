@@ -52,7 +52,7 @@
         </div>
 
         <div class="account-logout-wrap">
-          <button class="account-logout-btn" type="button">
+          <button class="account-logout-btn" type="button" @click="handleLogout">
             <span class="material-icons-round">logout</span>
             <span>退出登录</span>
           </button>
@@ -132,6 +132,15 @@ async function handleClose() {
   } catch {
     // ignore
   }
+}
+
+async function handleLogout() {
+  try {
+    await invoke('petool_logout')
+  } catch {
+    // ignore
+  }
+  void router.replace('/login')
 }
 </script>
 
