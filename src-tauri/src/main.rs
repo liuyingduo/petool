@@ -1,4 +1,4 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -20,7 +20,7 @@ use std::sync::Mutex as StdMutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
-use utils::load_config;
+use utils::{load_config, resolve_effective_downloads_dir, resolve_skills_dir};
 
 const TRAY_MENU_OPEN: &str = "tray-open-petool";
 const TRAY_MENU_EXIT: &str = "tray-exit-petool";
@@ -92,7 +92,10 @@ async fn main() {
             // Initialize database
             let config_dir = app.path().app_config_dir().unwrap();
             let db_path = config_dir.join("petool.db");
-            let skills_dir = config_dir.join("skills");
+            let initial_config = load_config::<Config>().unwrap_or_default();
+            let initial_downloads =
+                resolve_effective_downloads_dir(initial_config.downloads_directory.as_deref());
+            let skills_dir = resolve_skills_dir(&initial_downloads);
             let app_handle = app.handle().clone();
 
             // Create app state
@@ -156,6 +159,7 @@ async fn main() {
             config::validate_api_key,
             config::open_browser_profile_dir,
             config::reset_browser_profile,
+            config::submit_feedback,
             config::app_exit_now,
             // Chat commands
             chat::send_message,
@@ -209,3 +213,4 @@ async fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

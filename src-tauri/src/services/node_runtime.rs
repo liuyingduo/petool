@@ -1,4 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+﻿use anyhow::{anyhow, Context, Result};
+use crate::models::config::Config;
+use crate::utils::{
+    ensure_writable_directory, load_config, resolve_effective_downloads_dir,
+    resolve_node_download_cache_dir, resolve_node_runtime_root,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::env;
@@ -62,10 +67,11 @@ fn can_run_node(program: &Path) -> bool {
 }
 
 fn managed_runtime_root() -> Result<PathBuf> {
-    let base = dirs::data_local_dir()
-        .or_else(dirs::config_dir)
-        .ok_or_else(|| anyhow!("Could not resolve local data directory"))?;
-    Ok(base.join("petool").join("runtime").join("node"))
+    let config = load_config::<Config>().unwrap_or_default();
+    let downloads_dir = resolve_effective_downloads_dir(config.downloads_directory.as_deref());
+    let root = resolve_node_runtime_root(&downloads_dir);
+    ensure_writable_directory(&root)?;
+    Ok(root)
 }
 
 fn managed_current_dir() -> Result<PathBuf> {
@@ -226,10 +232,14 @@ async fn install_managed_node_runtime() -> Result<()> {
         version, version, platform_suffix
     );
 
+    let config = load_config::<Config>().unwrap_or_default();
+    let downloads_dir = resolve_effective_downloads_dir(config.downloads_directory.as_deref());
     let runtime_root = managed_runtime_root()?;
     fs::create_dir_all(&runtime_root)?;
+    let cache_root = resolve_node_download_cache_dir(&downloads_dir);
+    fs::create_dir_all(&cache_root)?;
 
-    let temp_dir = runtime_root.join(format!("tmp-install-{}", uuid::Uuid::new_v4()));
+    let temp_dir = cache_root.join(format!("tmp-install-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&temp_dir)?;
     let archive_path = temp_dir.join("node.zip");
     let extract_dir = temp_dir.join("extract");
@@ -297,3 +307,4 @@ pub async fn ensure_node_runtime() -> Result<NodeRuntime> {
         )
     })
 }
+

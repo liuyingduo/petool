@@ -427,6 +427,15 @@ label {
   font-weight: 700;
 }
 
+.sidebar-entry-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.account-btn,
 .settings-btn {
   width: 32px;
   height: 32px;
@@ -440,6 +449,7 @@ label {
   justify-content: center;
 }
 
+.account-btn:hover,
 .settings-btn:hover {
   background: #e7e2da;
   color: #6b6259;

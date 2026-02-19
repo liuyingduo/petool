@@ -29,7 +29,7 @@ body,
 }
 
 body {
-  font-family: 'Nunito', 'Segoe UI', sans-serif;
+  font-family: 'Nunito', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
   background: transparent;
   color: var(--color-text);
 }

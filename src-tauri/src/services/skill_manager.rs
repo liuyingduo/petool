@@ -1,5 +1,6 @@
-use crate::models::skill::*;
+﻿use crate::models::{config::Config, skill::*};
 use crate::services::node_runtime;
+use crate::utils::{load_config, resolve_effective_downloads_dir, resolve_skill_download_cache_dir};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -531,6 +532,12 @@ impl SkillManager {
         })
     }
 
+    pub fn set_skills_dir(&mut self, skills_dir: PathBuf) -> Result<()> {
+        fs::create_dir_all(&skills_dir)?;
+        self.skills_dir = skills_dir;
+        Ok(())
+    }
+
     pub async fn load_skills(&mut self) -> Result<()> {
         self.skills.clear();
         self.skill_paths.clear();
@@ -650,8 +657,11 @@ impl SkillManager {
         skill_path: Option<&str>,
     ) -> Result<Skill> {
         let source_url = resolve_clawhub_install_source_url(repo_url, None)?;
-        let temp_dir =
-            std::env::temp_dir().join(format!("petool-skill-install-{}", Uuid::new_v4()));
+        let config = load_config::<Config>().unwrap_or_default();
+        let downloads_dir = resolve_effective_downloads_dir(config.downloads_directory.as_deref());
+        let cache_root = resolve_skill_download_cache_dir(&downloads_dir);
+        fs::create_dir_all(&cache_root)?;
+        let temp_dir = cache_root.join(format!("petool-skill-install-{}", Uuid::new_v4()));
         let repo_root = match try_extract_source_from_archive(&source_url, &temp_dir).await {
             Ok(path) => path,
             Err(download_error) => {
@@ -1169,3 +1179,4 @@ Use weather APIs and summarize results.
         let _ = fs::remove_dir_all(&root);
     }
 }
+

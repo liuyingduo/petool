@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn default_tool_display_mode() -> String {
@@ -7,6 +7,30 @@ fn default_tool_display_mode() -> String {
 
 fn default_automation_enabled() -> bool {
     true
+}
+
+fn default_autostart_enabled() -> bool {
+    false
+}
+
+fn default_notification_sound_enabled() -> bool {
+    false
+}
+
+fn default_notification_break_reminder_enabled() -> bool {
+    true
+}
+
+fn default_notification_task_completed_enabled() -> bool {
+    true
+}
+
+fn default_downloads_directory_option() -> Option<String> {
+    Some(
+        crate::utils::resolve_default_downloads_dir()
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 fn default_automation_max_concurrent_runs() -> u32 {
@@ -169,12 +193,38 @@ pub struct Config {
     pub tool_path_permissions: Vec<ToolPathPermissionRule>,
     #[serde(default)]
     pub auto_approve_tool_requests: bool,
+    #[serde(default = "default_autostart_enabled")]
+    pub autostart_enabled: bool,
+    #[serde(default = "default_downloads_directory_option")]
+    pub downloads_directory: Option<String>,
+    #[serde(default)]
+    pub notifications: NotificationSettingsConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
     #[serde(default)]
     pub desktop: DesktopConfig,
     #[serde(default)]
     pub automation: AutomationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationSettingsConfig {
+    #[serde(default = "default_notification_sound_enabled")]
+    pub sound_enabled: bool,
+    #[serde(default = "default_notification_break_reminder_enabled")]
+    pub break_reminder_enabled: bool,
+    #[serde(default = "default_notification_task_completed_enabled")]
+    pub task_completed_enabled: bool,
+}
+
+impl Default for NotificationSettingsConfig {
+    fn default() -> Self {
+        Self {
+            sound_enabled: default_notification_sound_enabled(),
+            break_reminder_enabled: default_notification_break_reminder_enabled(),
+            task_completed_enabled: default_notification_task_completed_enabled(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -448,6 +498,9 @@ impl Default for Config {
             tool_permissions: HashMap::new(),
             tool_path_permissions: Vec::new(),
             auto_approve_tool_requests: false,
+            autostart_enabled: default_autostart_enabled(),
+            downloads_directory: default_downloads_directory_option(),
+            notifications: NotificationSettingsConfig::default(),
             browser: BrowserConfig::default(),
             desktop: DesktopConfig::default(),
             automation: AutomationConfig::default(),
@@ -469,6 +522,11 @@ mod tests {
     fn default_config_includes_browser_defaults() {
         let config = Config::default();
         assert!(!config.auto_approve_tool_requests);
+        assert!(!config.autostart_enabled);
+        assert!(config.downloads_directory.is_some());
+        assert!(!config.notifications.sound_enabled);
+        assert!(config.notifications.break_reminder_enabled);
+        assert!(config.notifications.task_completed_enabled);
         assert_eq!(
             config.clawhub_api_base,
             Some("https://clawhub.ai".to_string())
@@ -503,3 +561,4 @@ mod tests {
         assert!(!config.automation.heartbeat.tool_whitelist.is_empty());
     }
 }
+

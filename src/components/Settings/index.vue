@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-dialog
     v-model="dialogVisible"
     title="Settings"
@@ -192,10 +192,10 @@
           <el-divider content-position="left">Profile: {{ activeBrowserProfileName }}</el-divider>
 
           <el-alert
-            title="接管模式说明"
+            title="连接模式说明"
             type="info"
             :closable="false"
-            description="默认启动方式是外部 Chrome：使用 Executable Path 以 --remote-debugging-port + --user-data-dir + --window-size 启动后再自动接管。CDP URL 仅用于接管你手动启动的调试浏览器。"
+            description="默认通过外部 Chrome 接管：使用 Executable Path 启动，附带 --remote-debugging-port、--user-data-dir、--window-size。CDP URL 用于接管你手动启动的调试浏览器。"
             style="margin-bottom: 12px"
           />
 
@@ -220,7 +220,7 @@
           <el-form-item label="User Data Dir">
             <el-input
               v-model="activeBrowserProfile.user_data_dir"
-              placeholder="可选，不填则使用 PETool 默认目录"
+              placeholder="可选；留空则使用 PETool 默认目录"
             />
           </el-form-item>
 
@@ -540,6 +540,13 @@ const defaultConfig: Config = {
   tool_permissions: {},
   tool_path_permissions: [],
   auto_approve_tool_requests: false,
+  autostart_enabled: false,
+  downloads_directory: null,
+  notifications: {
+    sound_enabled: false,
+    break_reminder_enabled: true,
+    task_completed_enabled: true
+  },
   browser: deepClone(defaultBrowserConfig),
   desktop: deepClone(defaultDesktopConfig),
   automation: deepClone(defaultAutomationConfig)
@@ -917,4 +924,5 @@ async function resetBrowserProfile() {
   line-height: 1.4;
 }
 </style>
+
 

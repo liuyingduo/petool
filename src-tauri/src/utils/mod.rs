@@ -1,6 +1,93 @@
-use anyhow::Result;
+﻿use anyhow::Result;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+fn detect_install_root() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let components: Vec<_> = exe_path.components().collect();
+        let app_index = components.iter().position(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".app")
+        })?;
+        let mut app_path = PathBuf::new();
+        for component in &components[..=app_index] {
+            app_path.push(component.as_os_str());
+        }
+        return app_path.parent().map(Path::to_path_buf);
+    }
+
+    exe_path.parent().map(Path::to_path_buf)
+}
+
+pub fn ensure_writable_directory(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    let probe_path = path.join(".petool-write-test");
+    {
+        let mut file = fs::File::create(&probe_path)?;
+        file.write_all(b"ok")?;
+        file.flush()?;
+    }
+    let _ = fs::remove_file(probe_path);
+    Ok(())
+}
+
+pub fn fallback_downloads_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("petool")
+        .join("downloads")
+}
+
+pub fn resolve_default_downloads_dir() -> PathBuf {
+    if let Some(install_root) = detect_install_root() {
+        if let Some(parent) = install_root.parent() {
+            let sibling = parent.join("petool-data").join("downloads");
+            if ensure_writable_directory(&sibling).is_ok() {
+                return sibling;
+            }
+        }
+    }
+
+    let fallback = fallback_downloads_dir();
+    let _ = ensure_writable_directory(&fallback);
+    fallback
+}
+
+pub fn resolve_effective_downloads_dir(raw: Option<&str>) -> PathBuf {
+    let from_config = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    from_config.unwrap_or_else(resolve_default_downloads_dir)
+}
+
+pub fn resolve_tools_root(downloads_dir: &Path) -> PathBuf {
+    downloads_dir.join("tools")
+}
+
+pub fn resolve_skills_dir(downloads_dir: &Path) -> PathBuf {
+    resolve_tools_root(downloads_dir).join("skills")
+}
+
+pub fn resolve_node_runtime_root(downloads_dir: &Path) -> PathBuf {
+    resolve_tools_root(downloads_dir).join("node-runtime")
+}
+
+pub fn resolve_skill_download_cache_dir(downloads_dir: &Path) -> PathBuf {
+    downloads_dir.join("download-cache").join("skills")
+}
+
+pub fn resolve_node_download_cache_dir(downloads_dir: &Path) -> PathBuf {
+    downloads_dir.join("download-cache").join("node")
+}
 
 pub fn get_app_config_dir() -> Result<PathBuf> {
     let config_dir =
@@ -47,3 +134,4 @@ where
     fs::write(config_path, content)?;
     Ok(())
 }
+

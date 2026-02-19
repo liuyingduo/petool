@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -25,9 +25,18 @@ export interface Config {
   tool_permissions: Record<string, ToolPermissionAction>
   tool_path_permissions: ToolPathPermissionRule[]
   auto_approve_tool_requests: boolean
+  autostart_enabled: boolean
+  downloads_directory?: string | null
+  notifications: NotificationSettings
   browser: BrowserConfig
   desktop: DesktopConfig
   automation: AutomationConfig
+}
+
+export interface NotificationSettings {
+  sound_enabled: boolean
+  break_reminder_enabled: boolean
+  task_completed_enabled: boolean
 }
 
 export type ToolPermissionAction = 'allow' | 'ask' | 'deny'
@@ -127,6 +136,13 @@ export const useConfigStore = defineStore('config', () => {
     tool_permissions: {},
     tool_path_permissions: [],
     auto_approve_tool_requests: false,
+    autostart_enabled: false,
+    downloads_directory: null,
+    notifications: {
+      sound_enabled: false,
+      break_reminder_enabled: true,
+      task_completed_enabled: true
+    },
     browser: {
       enabled: true,
       default_profile: 'openclaw',
@@ -232,3 +248,4 @@ export const useConfigStore = defineStore('config', () => {
     validateApiKey
   }
 })
+

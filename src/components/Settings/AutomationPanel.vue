@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="automation-panel">
     <el-form :model="localAutomation" label-width="180px">
       <el-form-item label="Enable Automation">
@@ -81,20 +81,20 @@
       </el-form-item>
       <el-form-item>
         <el-button @click="handleRunHeartbeatNow" :loading="runningHeartbeat">
-          立即执行 Heartbeat
+          绔嬪嵆鎵ц Heartbeat
         </el-button>
       </el-form-item>
     </el-form>
 
     <el-divider content-position="left">Jobs</el-divider>
     <div class="job-toolbar">
-      <el-button size="small" @click="refreshJobs">刷新</el-button>
-      <el-button size="small" type="primary" @click="openCreateJobDialog">新建任务</el-button>
+      <el-button size="small" @click="refreshJobs">鍒锋柊</el-button>
+      <el-button size="small" type="primary" @click="openCreateJobDialog">鏂板缓浠诲姟</el-button>
     </div>
 
     <el-table :data="schedulerStore.jobs" size="small" style="width: 100%" height="220">
-      <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column label="启用" width="88">
+      <el-table-column prop="name" label="鍚嶇О" min-width="140" />
+      <el-table-column label="鍚敤" width="88">
         <template #default="{ row }">
           <el-switch
             :model-value="row.enabled"
@@ -103,10 +103,10 @@
           />
         </template>
       </el-table-column>
-      <el-table-column label="调度" min-width="168">
+      <el-table-column label="璋冨害" min-width="168">
         <template #default="{ row }">{{ formatSchedule(row) }}</template>
       </el-table-column>
-      <el-table-column label="下次运行" min-width="170">
+      <el-table-column label="涓嬫杩愯" min-width="170">
         <template #default="{ row }">{{ formatTime(row.nextRunAt) }}</template>
       </el-table-column>
       <el-table-column label="最近状态" min-width="120">
@@ -114,12 +114,12 @@
           <span :class="['status-chip', row.lastStatus || 'none']">{{ row.lastStatus || 'n/a' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="232" fixed="right">
+      <el-table-column label="鎿嶄綔" width="232" fixed="right">
         <template #default="{ row }">
           <div class="row-actions">
-            <el-button size="small" text @click="openEditJobDialog(row)">编辑</el-button>
-            <el-button size="small" text @click="handleRunJob(row.id)">执行</el-button>
-            <el-button size="small" text type="danger" @click="handleDeleteJob(row.id, row.name)">删除</el-button>
+            <el-button size="small" text @click="openEditJobDialog(row)">缂栬緫</el-button>
+            <el-button size="small" text @click="handleRunJob(row.id)">鎵ц</el-button>
+            <el-button size="small" text type="danger" @click="handleDeleteJob(row.id, row.name)">鍒犻櫎</el-button>
           </div>
         </template>
       </el-table-column>
@@ -130,7 +130,7 @@
       <el-select
         v-model="runFilterJobId"
         clearable
-        placeholder="全部任务"
+        placeholder="鍏ㄩ儴浠诲姟"
         style="width: 240px"
       >
         <el-option
@@ -140,58 +140,58 @@
           :value="job.id"
         />
       </el-select>
-      <el-button size="small" @click="refreshRuns">刷新</el-button>
+      <el-button size="small" @click="refreshRuns">鍒锋柊</el-button>
     </div>
 
     <el-table :data="schedulerStore.runs" size="small" style="width: 100%" height="220">
-      <el-table-column prop="jobNameSnapshot" label="任务" min-width="130" />
-      <el-table-column prop="source" label="来源" width="90" />
+      <el-table-column prop="jobNameSnapshot" label="浠诲姟" min-width="130" />
+      <el-table-column prop="source" label="鏉ユ簮" width="90" />
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <span :class="['status-chip', row.status]">{{ row.status }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="时间" min-width="160">
+      <el-table-column label="鏃堕棿" min-width="160">
         <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="摘要" min-width="220">
+      <el-table-column label="鎽樿" min-width="220">
         <template #default="{ row }">{{ row.summary || row.error || '-' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="86" fixed="right">
+      <el-table-column label="鎿嶄綔" width="86" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" text @click="openRunDetail(row)">详情</el-button>
+          <el-button size="small" text @click="openRunDetail(row)">璇︽儏</el-button>
         </template>
       </el-table-column>
     </el-table>
 
     <el-dialog v-model="jobDialogVisible" :title="jobDialogTitle" width="680px">
       <el-form :model="jobForm" label-width="170px">
-        <el-form-item label="任务名称">
+        <el-form-item label="浠诲姟鍚嶇О">
           <el-input v-model="jobForm.name" />
         </el-form-item>
-        <el-form-item label="描述">
+        <el-form-item label="鎻忚堪">
           <el-input v-model="jobForm.description" />
         </el-form-item>
-        <el-form-item label="启用">
+        <el-form-item label="鍚敤">
           <el-switch v-model="jobForm.enabled" />
         </el-form-item>
-        <el-form-item label="调度类型">
+        <el-form-item label="璋冨害绫诲瀷">
           <el-radio-group v-model="jobForm.scheduleKind">
             <el-radio value="at">at</el-radio>
             <el-radio value="every">every</el-radio>
             <el-radio value="cron">cron</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="At 时间" v-if="jobForm.scheduleKind === 'at'">
+        <el-form-item label="At 鏃堕棿" v-if="jobForm.scheduleKind === 'at'">
           <el-input v-model="jobForm.scheduleAt" placeholder="2026-02-20T08:30:00+08:00" />
         </el-form-item>
-        <el-form-item label="Every 秒数" v-if="jobForm.scheduleKind === 'every'">
+        <el-form-item label="Every 绉掓暟" v-if="jobForm.scheduleKind === 'every'">
           <el-input-number v-model="jobForm.everySeconds" :min="1" :max="86400" />
         </el-form-item>
         <el-form-item label="Cron 表达式" v-if="jobForm.scheduleKind === 'cron'">
           <el-input v-model="jobForm.cronExpr" placeholder="0 */30 * * * * *" />
         </el-form-item>
-        <el-form-item label="Cron 时区" v-if="jobForm.scheduleKind === 'cron'">
+        <el-form-item label="Cron 鏃跺尯" v-if="jobForm.scheduleKind === 'cron'">
           <el-input v-model="jobForm.timezone" placeholder="Asia/Shanghai (optional)" />
         </el-form-item>
         <el-form-item label="Session Mode">
@@ -200,7 +200,7 @@
             <el-option label="isolated" value="isolated" />
           </el-select>
         </el-form-item>
-        <el-form-item label="目标会话">
+        <el-form-item label="鐩爣浼氳瘽">
           <el-select v-model="jobForm.targetConversationId" filterable style="width: 100%">
             <el-option
               v-for="conversation in conversations"
@@ -210,10 +210,10 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="消息模板">
+        <el-form-item label="娑堟伅妯℃澘">
           <el-input v-model="jobForm.message" type="textarea" :rows="3" />
         </el-form-item>
-        <el-form-item label="模型覆盖">
+        <el-form-item label="妯″瀷瑕嗙洊">
           <el-input v-model="jobForm.modelOverride" placeholder="Optional" />
         </el-form-item>
         <el-form-item label="工作区目录">
@@ -235,17 +235,17 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="jobDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveJob" :loading="savingJob">保存</el-button>
+        <el-button @click="jobDialogVisible = false">鍙栨秷</el-button>
+        <el-button type="primary" @click="saveJob" :loading="savingJob">淇濆瓨</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="runDetailVisible" title="Run Detail" width="760px">
       <div v-if="selectedRun">
         <div class="run-meta">
-          <div>状态: {{ selectedRun.status }}</div>
-          <div>来源: {{ selectedRun.source }}</div>
-          <div>时间: {{ formatTime(selectedRun.createdAt) }}</div>
+          <div>鐘舵€? {{ selectedRun.status }}</div>
+          <div>鏉ユ簮: {{ selectedRun.source }}</div>
+          <div>鏃堕棿: {{ formatTime(selectedRun.createdAt) }}</div>
         </div>
         <div v-if="selectedRun.summary" class="run-summary">{{ selectedRun.summary }}</div>
         <pre class="run-detail-json">{{ runDetailText }}</pre>
@@ -348,7 +348,7 @@ const jobWhitelistText = ref('')
 const runDetailVisible = ref(false)
 const selectedRun = ref<SchedulerRun | null>(null)
 
-const jobDialogTitle = computed(() => (jobForm.value.id ? '编辑任务' : '新建任务'))
+const jobDialogTitle = computed(() => (jobForm.value.id ? '缂栬緫浠诲姟' : '鏂板缓浠诲姟'))
 
 const heartbeatWhitelistText = computed({
   get: () => (localAutomation.value.heartbeat.tool_whitelist || []).join('\n'),
@@ -586,7 +586,7 @@ async function handleRunJob(jobId: string) {
 
 async function handleDeleteJob(jobId: string, name: string) {
   try {
-    await ElMessageBox.confirm(`确认删除任务「${name}」吗？`, '删除任务', {
+    await ElMessageBox.confirm('确认删除任务「' + name + '」吗？', '删除任务', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消'
@@ -698,3 +698,4 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 </style>
+
