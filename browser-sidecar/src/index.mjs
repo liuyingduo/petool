@@ -311,24 +311,25 @@ async function attachExistingBrowserViaCdp(profileConfig, browserConfig, state) 
   await attachBrowserViaCdp(cdpUrl, browserConfig, state, null)
 }
 
-async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess) {
-  const browser = await chromium.connectOverCDP(cdpUrl)
-  const contexts = browser.contexts()
-  const context = contexts[0] || null
-  if (!context) {
-    throw new Error(`No context found after connecting to CDP endpoint: ${cdpUrl}`)
-  }
+async function bindContextToState(browserConfig, state, context, options = {}) {
+  const browser = options.browser || null
+  const connectionMode = options.connectionMode || 'playwright'
+  const launchedProcess = options.launchedProcess || null
+  const launchedCdpUrl = options.launchedCdpUrl || null
+
   state.browser = browser
   state.context = context
-  state.connectionMode = 'cdp'
+  state.connectionMode = connectionMode
   state.launchedProcess = launchedProcess
-  state.launchedCdpUrl = launchedProcess ? cdpUrl : null
+  state.launchedCdpUrl = launchedCdpUrl
   clearProfilePages(state)
 
   const onSessionClosed = () => {
     markSessionDisconnected(state)
   }
-  browser.on('disconnected', onSessionClosed)
+  if (browser && typeof browser.on === 'function') {
+    browser.on('disconnected', onSessionClosed)
+  }
   context.on('close', onSessionClosed)
 
   for (const page of context.pages()) {
@@ -369,22 +370,19 @@ async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess
   }
 }
 
-function buildChromeLaunchArgs(profileConfig, userDataDir, remoteDebuggingPort) {
-  const viewport = defaultViewport(profileConfig)
-  const args = [
-    `--remote-debugging-port=${remoteDebuggingPort}`,
-    '--remote-debugging-address=127.0.0.1',
-    `--user-data-dir=${userDataDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--new-window',
-    `--window-size=${viewport.width},${viewport.height}`
-  ]
-  if (profileConfig?.headless) {
-    args.push('--headless=new')
+async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess) {
+  const browser = await chromium.connectOverCDP(cdpUrl)
+  const contexts = browser.contexts()
+  const context = contexts[0] || null
+  if (!context) {
+    throw new Error(`No context found after connecting to CDP endpoint: ${cdpUrl}`)
   }
-  args.push('about:blank')
-  return args
+  await bindContextToState(browserConfig, state, context, {
+    browser,
+    connectionMode: 'cdp',
+    launchedProcess,
+    launchedCdpUrl: launchedProcess ? cdpUrl : null
+  })
 }
 
 async function launchExternalChromeViaCdp(profileName, profileConfig, browserConfig, state, paths) {
@@ -400,29 +398,30 @@ async function launchExternalChromeViaCdp(profileName, profileConfig, browserCon
     : profileUserDataDir(paths, profileName)
   await ensureDir(userDataDir)
 
-  const remoteDebuggingPort = await findFreeTcpPort()
-  const cdpUrl = `http://127.0.0.1:${remoteDebuggingPort}`
-  const launchArgs = buildChromeLaunchArgs(profileConfig, userDataDir, remoteDebuggingPort)
-
-  const child = spawn(executablePath, launchArgs, {
-    stdio: 'ignore',
-    windowsHide: true,
-    detached: true
-  })
-  child.unref()
+  const viewport = defaultViewport(profileConfig)
+  const launchArgs = [
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--new-window',
+    `--window-size=${viewport.width},${viewport.height}`
+  ]
 
   try {
-    const cdpReady = await waitForCdpEndpoint(cdpUrl)
-    const connectEndpoint =
-      typeof cdpReady?.webSocketDebuggerUrl === 'string' && cdpReady.webSocketDebuggerUrl
-        ? cdpReady.webSocketDebuggerUrl
-        : cdpUrl
-    await attachBrowserViaCdp(connectEndpoint, browserConfig, state, child)
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      executablePath,
+      headless: Boolean(profileConfig?.headless),
+      viewport,
+      args: launchArgs
+    })
+    const browser = context.browser() || null
+    await bindContextToState(browserConfig, state, context, {
+      browser,
+      connectionMode: 'playwright',
+      launchedProcess: null,
+      launchedCdpUrl: null
+    })
   } catch (error) {
-    await terminateChildProcess(child)
-    throw new Error(
-      `Failed to launch browser with remote debugging (${executablePath}): ${makeErrorMessage(error)}`
-    )
+    throw new Error(`Failed to launch browser (${executablePath}): ${makeErrorMessage(error)}`)
   }
 }
 
