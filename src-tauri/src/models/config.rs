@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn default_tool_display_mode() -> String {
@@ -577,4 +577,3 @@ mod tests {
         assert!(!config.automation.heartbeat.tool_whitelist.is_empty());
     }
 }
-

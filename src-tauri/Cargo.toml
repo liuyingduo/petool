@@ -35,6 +35,7 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+pdfium-render = "0.8.37"
 cron = "0.12"
 chrono-tz = "0.10"
 mem0-rust = { path = "vendor/mem0-rust", features = ["openai"] }

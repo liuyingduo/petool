@@ -1,10 +1,10 @@
-﻿use crate::commands::skills::SkillManagerState;
+use crate::commands::skills::SkillManagerState;
 use crate::models::config::Config;
 use crate::services::browser::paths::{browser_profile_user_data_dir, sanitize_profile_name};
 use crate::utils::{
-    ensure_writable_directory, get_app_config_dir, load_config, resolve_effective_downloads_dir,
-    resolve_node_download_cache_dir, resolve_node_runtime_root, resolve_skill_download_cache_dir,
-    resolve_skills_dir, resolve_default_downloads_dir, save_config,
+    ensure_writable_directory, get_app_config_dir, load_config, resolve_default_downloads_dir,
+    resolve_effective_downloads_dir, resolve_node_download_cache_dir, resolve_node_runtime_root,
+    resolve_skill_download_cache_dir, resolve_skills_dir, save_config,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,11 @@ fn migrate_directory(src: &Path, dst: &Path) -> Result<(), String> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("migrating-dir");
-    let backup_name = format!("{}-migrated-{}", file_name, Utc::now().format("%Y%m%d%H%M%S"));
+    let backup_name = format!(
+        "{}-migrated-{}",
+        file_name,
+        Utc::now().format("%Y%m%d%H%M%S")
+    );
     let backup = src.with_file_name(backup_name);
     fs::rename(src, backup).map_err(|e| e.to_string())
 }
@@ -118,15 +122,7 @@ fn apply_autostart(enabled: bool) -> Result<(), String> {
     if enabled {
         let status = Command::new("reg")
             .args([
-                "add",
-                run_key,
-                "/v",
-                "PETool",
-                "/t",
-                "REG_SZ",
-                "/d",
-                &value,
-                "/f",
+                "add", run_key, "/v", "PETool", "/t", "REG_SZ", "/d", &value, "/f",
             ])
             .status()
             .map_err(|e| e.to_string())?;
@@ -175,7 +171,10 @@ fn apply_autostart(enabled: bool) -> Result<(), String> {
             exe = exe.to_string_lossy()
         );
         fs::write(&plist_path, plist).map_err(|e| e.to_string())?;
-        let _ = Command::new("launchctl").arg("unload").arg(&plist_path).status();
+        let _ = Command::new("launchctl")
+            .arg("unload")
+            .arg(&plist_path)
+            .status();
         let status = Command::new("launchctl")
             .arg("load")
             .arg("-w")
@@ -220,13 +219,17 @@ pub async fn set_config(
 
     normalize_downloads_directory(&mut config)?;
 
-    let old_downloads = resolve_effective_downloads_dir(previous_config.downloads_directory.as_deref());
+    let old_downloads =
+        resolve_effective_downloads_dir(previous_config.downloads_directory.as_deref());
     let new_downloads = resolve_effective_downloads_dir(config.downloads_directory.as_deref());
 
     apply_autostart(config.autostart_enabled)?;
 
     if old_downloads != new_downloads {
-        migrate_directory(&resolve_skills_dir(&old_downloads), &resolve_skills_dir(&new_downloads))?;
+        migrate_directory(
+            &resolve_skills_dir(&old_downloads),
+            &resolve_skills_dir(&new_downloads),
+        )?;
         migrate_directory(
             &resolve_node_runtime_root(&old_downloads),
             &resolve_node_runtime_root(&new_downloads),
@@ -457,4 +460,3 @@ pub async fn submit_feedback(input: FeedbackDraftInput) -> Result<FeedbackDraftS
 pub fn app_exit_now(app: tauri::AppHandle) {
     app.exit(0);
 }
-

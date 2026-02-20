@@ -125,7 +125,7 @@
         </aside>
 
         <section class="chat-wrap">
-          <div class="chat-body" :class="{ creating: createDialogVisible }">
+          <div class="chat-body" :class="{ creating: createDialogVisible, 'monitor-open': !taskMonitorCollapsed }">
           <div v-if="createDialogVisible" class="create-mask"></div>
 
           <div v-if="createDialogVisible" class="create-dialog">
@@ -173,6 +173,7 @@
             v-else
             ref="messageListRef"
             class="message-list no-scrollbar"
+            v-memo="messageListMemoDeps"
             @click="handleMarkdownLinkClick"
             @scroll.passive="handleMessageListScroll"
           >
@@ -203,7 +204,7 @@
                     class="timeline-event"
                   >
                     <template v-if="event.event_type === 'assistant_reasoning'">
-                      <div class="reasoning">
+                      <div v-if="isToolDisplayFull" class="reasoning">
                         <button class="reasoning-toggle" @click="toggleTimelineReasoning(event.id)">
                           <span>思考过程</span>
                           <span class="reasoning-state">{{ isTimelineReasoningCollapsed(event.id) ? '已折叠' : '展开中' }}</span>
@@ -215,58 +216,55 @@
                           {{ getTimelineReasoningText(event) }}
                         </div>
                       </div>
-                    </template>
-
-                    <template v-else-if="event.event_type === 'assistant_tool_call'">
-                      <div v-if="isToolDisplayFull" class="tool-progress">
-                        <div class="tool-list">
-                          <div class="tool-item running">
-                            <div class="tool-title">{{ getTimelineToolName(event) }}</div>
-                            <div v-if="getTimelineToolArguments(event)" class="tool-text">
-                              <span class="tool-text-label">参数</span>
-                              <pre class="tool-code">{{ getTimelineToolArguments(event) }}</pre>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div v-else class="tool-compact">
-                        <div class="tool-compact-list">
-                          <div class="tool-compact-item running">
-                            <div class="tool-compact-main">
-                              <span class="tool-compact-dot" aria-hidden="true"></span>
-                              <span class="tool-compact-name">{{ getTimelineToolName(event) }}</span>
-                              <span class="tool-compact-status">{{ getTimelineToolCompactStatus(event) }}</span>
-                            </div>
-                            <div v-if="getTimelineToolCompactDetail(event, turn.assistantEvents)" class="tool-compact-detail">
-                              {{ getTimelineToolCompactDetail(event, turn.assistantEvents) }}
-                            </div>
-                          </div>
-                        </div>
+                      <div v-else class="reasoning-compact">
+                        <span class="material-icons-round">psychology_alt</span>
+                        <span class="reasoning-compact-label">Thought</span>
+                        <span class="reasoning-compact-text">{{ getCompactReasoningSummary(event) }}</span>
                       </div>
                     </template>
 
-                    <template v-else-if="event.event_type === 'assistant_tool_result'">
+                    <template v-else-if="isTimelineToolEvent(event)">
                       <div v-if="isToolDisplayFull" class="tool-progress">
                         <div class="tool-list">
-                          <div class="tool-item" :class="getTimelineToolResultStatus(event)">
+                          <div class="tool-item" :class="event.event_type === 'assistant_tool_call' ? 'running' : getTimelineToolResultStatus(event)">
                             <div class="tool-title">{{ getTimelineToolName(event) }}</div>
-                            <div v-if="getTimelineToolResult(event)" class="tool-text">
-                              <span class="tool-text-label">结果</span>
-                              <pre class="tool-code">{{ getTimelineToolResult(event) }}</pre>
+                            <div v-if="getTimelineToolDisplayText(event)" class="tool-text">
+                              <span class="tool-text-label">{{ event.event_type === 'assistant_tool_call' ? '参数' : '结果' }}</span>
+                              <pre class="tool-code">{{ getTimelineToolDisplayText(event) }}</pre>
                             </div>
                           </div>
                         </div>
                       </div>
-                      <div v-else class="tool-compact">
-                        <div class="tool-compact-list">
-                          <div class="tool-compact-item" :class="getTimelineToolResultStatus(event)">
-                            <div class="tool-compact-main">
-                              <span class="tool-compact-dot" aria-hidden="true"></span>
-                              <span class="tool-compact-name">{{ getTimelineToolName(event) }}</span>
-                              <span class="tool-compact-status">{{ getTimelineToolCompactStatus(event) }}</span>
-                            </div>
-                            <div v-if="getTimelineToolCompactDetail(event, turn.assistantEvents)" class="tool-compact-detail">
-                              {{ getTimelineToolCompactDetail(event, turn.assistantEvents) }}
+                      <div
+                        v-else-if="shouldRenderCompactToolSummary(turn.turnId, event, turn.assistantEvents)"
+                        class="tool-compact-batch"
+                      >
+                        <button class="tool-batch-toggle" @click="toggleTurnToolExecution(turn.turnId)">
+                          <span class="material-icons-round">terminal</span>
+                          <span class="tool-batch-title">查看执行工具</span>
+                          <span class="tool-batch-count">{{ getTurnToolExecutions(turn.turnId).length }} step</span>
+                          <span class="material-icons-round">
+                            {{ isTurnToolExecutionCollapsed(turn.turnId) ? 'expand_more' : 'expand_less' }}
+                          </span>
+                        </button>
+                        <div v-show="!isTurnToolExecutionCollapsed(turn.turnId)" class="tool-batch-list">
+                          <div
+                            v-for="step in getTurnToolExecutions(turn.turnId)"
+                            :key="step.id"
+                            class="tool-batch-item"
+                            :class="step.status"
+                          >
+                            <span class="status-indicator" :class="step.status" aria-hidden="true">
+                              <span v-if="step.status === 'running'" class="status-spinner"></span>
+                              <span v-else-if="step.status === 'done'" class="material-icons-round">check_circle</span>
+                              <span v-else class="material-icons-round">cancel</span>
+                            </span>
+                            <div class="tool-batch-main">
+                              <div class="tool-batch-line">
+                                <span class="tool-batch-name">{{ step.title }}</span>
+                                <span class="tool-batch-status">{{ formatToolStepStatus(step.status) }}</span>
+                              </div>
+                              <div v-if="step.detail" class="tool-batch-detail">{{ step.detail }}</div>
                             </div>
                           </div>
                         </div>
@@ -290,6 +288,76 @@
                 <div class="typing"><span></span><span></span><span></span></div>
               </div>
             </div>
+          </div>
+
+          <div
+            v-if="!createDialogVisible"
+            class="task-monitor-shell"
+            :class="{ collapsed: taskMonitorCollapsed }"
+          >
+            <button class="task-monitor-toggle" type="button" @click="toggleTaskMonitor">
+              <span class="material-icons-round">
+                {{ taskMonitorCollapsed ? 'keyboard_arrow_left' : 'keyboard_arrow_right' }}
+              </span>
+            </button>
+            <aside class="task-monitor-card">
+              <div class="task-monitor-title">Task Monitor</div>
+
+              <section class="task-monitor-section">
+                <button class="task-monitor-section-head" type="button" @click="toggleMonitorSection('todos')">
+                  <span>Todos</span>
+                  <span class="material-icons-round">{{ monitorSectionsOpen.todos ? 'expand_less' : 'expand_more' }}</span>
+                </button>
+                <div v-show="monitorSectionsOpen.todos" class="task-monitor-section-body">
+                  <div v-if="monitorTodos.length === 0" class="task-monitor-empty">等待工具执行...</div>
+                  <div v-for="todo in monitorTodos" :key="todo.id" class="task-monitor-row">
+                    <span class="status-indicator" :class="todo.status" aria-hidden="true">
+                      <span v-if="todo.status === 'running'" class="status-spinner"></span>
+                      <span v-else-if="todo.status === 'done'" class="material-icons-round">check_circle</span>
+                      <span v-else class="material-icons-round">cancel</span>
+                    </span>
+                    <span class="task-monitor-row-label">{{ todo.label }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-monitor-section">
+                <button class="task-monitor-section-head" type="button" @click="toggleMonitorSection('artifacts')">
+                  <span>Artifacts</span>
+                  <span class="material-icons-round">{{ monitorSectionsOpen.artifacts ? 'expand_less' : 'expand_more' }}</span>
+                </button>
+                <div v-show="monitorSectionsOpen.artifacts" class="task-monitor-section-body">
+                  <div v-if="monitorArtifacts.length === 0" class="task-monitor-empty">
+                    {{ fsStore.currentDirectory ? truncateMiddle(fsStore.currentDirectory, 38) : 'Default workspace' }}
+                  </div>
+                  <div v-for="artifact in monitorArtifacts" :key="artifact.id" class="task-monitor-row artifact">
+                    <span class="status-indicator" :class="artifact.status" aria-hidden="true">
+                      <span v-if="artifact.status === 'running'" class="status-spinner"></span>
+                      <span v-else-if="artifact.status === 'done'" class="material-icons-round">check_circle</span>
+                      <span v-else class="material-icons-round">cancel</span>
+                    </span>
+                    <div class="task-monitor-artifact-content">
+                      <div class="task-monitor-row-label">{{ artifact.name }}</div>
+                      <div class="task-monitor-row-sub">{{ artifact.action }} · {{ artifact.path }}</div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-monitor-section">
+                <button class="task-monitor-section-head" type="button" @click="toggleMonitorSection('skills')">
+                  <span>Skills & MCP</span>
+                  <span class="material-icons-round">{{ monitorSectionsOpen.skills ? 'expand_less' : 'expand_more' }}</span>
+                </button>
+                <div v-show="monitorSectionsOpen.skills" class="task-monitor-section-body">
+                  <div v-if="monitorSkills.length === 0" class="task-monitor-empty">暂无</div>
+                  <div v-for="skill in monitorSkills" :key="skill" class="task-monitor-row skill">
+                    <span class="material-icons-round">api</span>
+                    <span class="task-monitor-row-label">{{ skill }}</span>
+                  </div>
+                </div>
+              </section>
+            </aside>
           </div>
         </div>
 
@@ -349,7 +417,7 @@
           <div class="upload-strip-title">已添加文件（发送后会一并交给模型）</div>
           <div class="upload-list">
             <div v-for="item in pendingUploads" :key="item.id" class="upload-chip">
-              <span class="material-icons-round">{{ item.inlineText ? 'description' : 'insert_drive_file' }}</span>
+              <span class="material-icons-round">{{ uploadIcon(item.extension) }}</span>
               <span class="upload-chip-name">{{ item.name }}</span>
               <span class="upload-chip-meta">{{ formatBytes(item.size) }}</span>
               <button class="upload-chip-remove" type="button" @click.stop="removeUpload(item.id)">
@@ -395,26 +463,27 @@
               createDialogVisible ||
               !chatStore.currentConversationId ||
               isCurrentConversationStreaming ||
-              generatingImage ||
-              !canGenerateImagePrompt
+              generatingImage
             "
             @click="generateImage"
           >
             <span class="material-icons-round">{{ generatingImage ? 'hourglass_top' : 'image' }}</span>
           </button>
           <input
-            v-model="inputMessage"
+            ref="composerInputRef"
             type="text"
             placeholder="想让我做什么？"
             :disabled="createDialogVisible || !chatStore.currentConversationId || isCurrentConversationStreaming"
-            @keydown.enter.prevent="sendMessage"
+            spellcheck="false"
+            autocomplete="off"
+            @keydown.enter.prevent="handleComposerEnter"
           />
           <button
             class="send-btn"
             :disabled="
               createDialogVisible ||
               !chatStore.currentConversationId ||
-              (isCurrentConversationStreaming ? pausingStream : !canSendMessage)
+              (isCurrentConversationStreaming ? pausingStream : false)
             "
             @click="isCurrentConversationStreaming ? pauseStream() : sendMessage()"
           >
@@ -455,9 +524,6 @@ interface UploadAttachment {
   name: string
   extension: string
   size: number
-  inlineText: string | null
-  inlineTruncated: boolean
-  note: string
 }
 
 interface PathInfo {
@@ -470,21 +536,9 @@ interface PathInfo {
 
 type ConversationMenuCommand = 'pin' | 'rename' | 'delete'
 
-const MAX_INLINE_FILE_SIZE = 1_500_000
-const MAX_INLINE_TEXT_CHARS = 80_000
-const MAX_TOTAL_INLINE_CHARS = 140_000
 const PINNED_CONVERSATION_STORAGE_KEY = 'petool.pinned-conversation-ids'
-
-const TEXT_FILE_EXTENSIONS = new Set([
-  'txt', 'md', 'markdown', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini', 'csv', 'tsv',
-  'xml', 'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'vue',
-  'py', 'java', 'go', 'rs', 'cpp', 'c', 'h', 'hpp', 'sh', 'ps1', 'bat', 'sql', 'log'
-])
-
-const BINARY_FILE_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'xlsm', 'zip', 'rar', '7z',
-  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'mp3', 'wav', 'mp4', 'mov'
-])
+const MARKDOWN_CACHE_MAX_ENTRIES = 300
+const TOOL_DETAIL_CACHE_MAX_ENTRIES = 800
 
 const chatStore = useChatStore()
 const configStore = useConfigStore()
@@ -492,11 +546,11 @@ const fsStore = useFilesystemStore()
 const router = useRouter()
 const useCustomWindowChrome = import.meta.env.VITE_CUSTOM_CHROME !== '0'
 
-const inputMessage = ref('')
 const newConversationTitle = ref('')
 const createDialogVisible = ref(false)
 const createConversationWorkspaceDirectory = ref<string | null>(null)
 const pendingUploads = ref<UploadAttachment[]>([])
+const composerInputRef = ref<HTMLInputElement | null>(null)
 const workspaceRef = ref<HTMLElement | null>(null)
 const messageListRef = ref<HTMLElement | null>(null)
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
@@ -618,6 +672,42 @@ const isToolDisplayFull = computed(() => toolDisplayMode.value === 'full')
 
 const shouldStickToMessageBottom = ref(true)
 const timelineReasoningCollapsedByEventId = ref<Record<string, boolean>>({})
+const timelineReasoningCollapsedVersion = ref(0)
+const markdownCache = new Map<string, string>()
+const timelineToolCompactDetailCache = new Map<string, string>()
+const compactToolExecutionCollapsedByTurnId = ref<Record<string, boolean>>({})
+const compactToolExecutionVersion = ref(0)
+const taskMonitorCollapsed = ref(false)
+const monitorSectionsOpen = ref({
+  todos: true,
+  artifacts: true,
+  skills: true
+})
+
+type ToolStepStatus = 'running' | 'done' | 'error'
+
+interface CompactToolExecutionStep {
+  id: string
+  toolName: string
+  title: string
+  detail: string
+  status: ToolStepStatus
+  artifactPath: string
+}
+
+interface MonitorTodoItem {
+  id: string
+  label: string
+  status: ToolStepStatus
+}
+
+interface MonitorArtifactItem {
+  id: string
+  name: string
+  path: string
+  action: string
+  status: ToolStepStatus
+}
 
 interface TimelineTurnDisplay {
   turnId: string
@@ -662,6 +752,90 @@ const timelineTurnsForDisplay = computed<TimelineTurnDisplay[]>(() => {
   }
 
   return turns
+})
+
+const timelineRenderToken = computed(() => {
+  const events = chatStore.currentTimeline
+  if (events.length === 0) return 'empty'
+  const last = events[events.length - 1]
+  return `${events.length}:${last.id}:${last.seq}`
+})
+
+const messageListMemoDeps = computed(() => [
+  chatStore.currentConversationId || '',
+  chatStore.currentTimelineLegacy ? 1 : 0,
+  timelineRenderToken.value,
+  isToolDisplayFull.value ? 1 : 0,
+  shouldShowStandaloneTypingBubble.value ? 1 : 0,
+  timelineReasoningCollapsedVersion.value,
+  compactToolExecutionVersion.value
+])
+
+const turnToolExecutionsByTurnId = computed<Record<string, CompactToolExecutionStep[]>>(() => {
+  const map: Record<string, CompactToolExecutionStep[]> = {}
+  for (const turn of timelineTurnsForDisplay.value) {
+    map[turn.turnId] = buildTurnToolExecutionSteps(turn.assistantEvents)
+  }
+  return map
+})
+
+const latestMonitorTurn = computed<TimelineTurnDisplay | null>(() => {
+  const turns = timelineTurnsForDisplay.value
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turn = turns[i]
+    if (turn.assistantEvents.length > 0) return turn
+  }
+  return null
+})
+
+const monitorToolExecutions = computed(() => {
+  const turn = latestMonitorTurn.value
+  if (!turn) return []
+  return turnToolExecutionsByTurnId.value[turn.turnId] || []
+})
+
+const monitorTodos = computed<MonitorTodoItem[]>(() => {
+  const rows: MonitorTodoItem[] = []
+  for (let i = 0; i < monitorToolExecutions.value.length; i += 1) {
+    const step = monitorToolExecutions.value[i]
+    rows.push({
+      id: `${step.id}-${i}`,
+      label: step.detail || step.title,
+      status: step.status
+    })
+  }
+  return rows
+})
+
+const monitorArtifacts = computed<MonitorArtifactItem[]>(() => {
+  const rows: MonitorArtifactItem[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < monitorToolExecutions.value.length; i += 1) {
+    const step = monitorToolExecutions.value[i]
+    if (!step.artifactPath || !isArtifactToolName(step.toolName)) continue
+    if (seen.has(step.artifactPath)) continue
+    seen.add(step.artifactPath)
+    rows.push({
+      id: `${step.id}-${step.artifactPath}`,
+      name: getPathName(step.artifactPath) || step.artifactPath,
+      path: truncateMiddle(step.artifactPath, 46),
+      action: resolveArtifactAction(step.toolName),
+      status: step.status
+    })
+  }
+  return rows
+})
+
+const monitorSkills = computed(() => {
+  const labels: string[] = []
+  const seen = new Set<string>()
+  for (const step of monitorToolExecutions.value) {
+    const label = mapToolNameToMonitorSkill(step.toolName)
+    if (!label || seen.has(label)) continue
+    seen.add(label)
+    labels.push(label)
+  }
+  return labels
 })
 
 function getTimelinePayloadValue(event: TimelineEvent, key: string) {
@@ -711,39 +885,229 @@ function getTimelineToolResultStatus(event: TimelineEvent) {
   return typeof error === 'string' && error.trim() ? 'error' : 'done'
 }
 
-function getTimelineToolCompactStatus(event: TimelineEvent) {
+function isTimelineToolEvent(event: TimelineEvent) {
+  return event.event_type === 'assistant_tool_call' || event.event_type === 'assistant_tool_result'
+}
+
+function getTimelineToolDisplayText(event: TimelineEvent) {
   if (event.event_type === 'assistant_tool_call') {
-    return '运行中'
+    return getTimelineToolArguments(event)
   }
   if (event.event_type === 'assistant_tool_result') {
-    return getTimelineToolResultStatus(event) === 'error' ? '失败' : '完成'
+    return getTimelineToolResult(event)
   }
   return ''
 }
 
+function getCompactReasoningSummary(event: TimelineEvent) {
+  const text = getTimelineReasoningText(event)
+  if (!text.trim()) return '思考中...'
+  return shortenText(text, 72)
+}
+
+function formatToolStepStatus(status: ToolStepStatus) {
+  if (status === 'running') return '执行中'
+  if (status === 'done') return '已完成'
+  return '执行失败'
+}
+
+function isTurnToolExecutionCollapsed(turnId: string) {
+  return compactToolExecutionCollapsedByTurnId.value[turnId] ?? true
+}
+
+function toggleTurnToolExecution(turnId: string) {
+  compactToolExecutionCollapsedByTurnId.value[turnId] = !isTurnToolExecutionCollapsed(turnId)
+  compactToolExecutionVersion.value += 1
+}
+
+function getTurnToolExecutions(turnId: string) {
+  return turnToolExecutionsByTurnId.value[turnId] || []
+}
+
+function shouldRenderCompactToolSummary(turnId: string, event: TimelineEvent, turnEvents: TimelineEvent[]) {
+  if (isToolDisplayFull.value || !isTimelineToolEvent(event)) return false
+  const firstToolEvent = turnEvents.find((item) => isTimelineToolEvent(item))
+  if (!firstToolEvent) return false
+  const hasExecutions = getTurnToolExecutions(turnId).length > 0
+  return hasExecutions && firstToolEvent.id === event.id
+}
+
+function toggleTaskMonitor() {
+  taskMonitorCollapsed.value = !taskMonitorCollapsed.value
+}
+
+function toggleMonitorSection(section: 'todos' | 'artifacts' | 'skills') {
+  monitorSectionsOpen.value[section] = !monitorSectionsOpen.value[section]
+}
+
+function mapToolNameToMonitorSkill(toolName: string) {
+  if (!toolName) return ''
+  if (toolName.startsWith('mcp__')) {
+    return renderToolLabel(toolName)
+  }
+  if (toolName === 'browser' || toolName === 'browser_navigate' || toolName === 'web_fetch' || toolName === 'web_search') {
+    return 'agent-browser'
+  }
+  if (toolName === 'desktop') {
+    return 'desktop-automation'
+  }
+  if (toolName === 'skills_install_from_repo') {
+    return 'skill-installer'
+  }
+  return ''
+}
+
+function isArtifactToolName(toolName: string) {
+  return toolName === 'workspace_write_file' || toolName === 'workspace_edit_file' || toolName === 'desktop'
+}
+
+function resolveArtifactAction(toolName: string) {
+  if (toolName === 'workspace_edit_file') return '修改'
+  if (toolName === 'workspace_write_file') return '生成'
+  if (toolName === 'desktop') return '输出'
+  return '产物'
+}
+
+function extractArtifactPathFromCall(toolName: string, args: Record<string, unknown> | null) {
+  if (!args) return ''
+  if (toolName === 'workspace_write_file' || toolName === 'workspace_edit_file') {
+    return readNestedString(args, 'path')
+  }
+  if (toolName === 'desktop') {
+    return readNestedString(args, 'params.path')
+  }
+  return ''
+}
+
+function extractArtifactPathFromResult(result: Record<string, unknown> | null) {
+  if (!result) return ''
+  return (
+    readNestedString(result, 'path') ||
+    readNestedString(result, 'file_path') ||
+    readNestedString(result, 'data.path') ||
+    readNestedString(result, 'result.path')
+  )
+}
+
+function buildTurnToolExecutionSteps(turnEvents: TimelineEvent[]): CompactToolExecutionStep[] {
+  const steps: CompactToolExecutionStep[] = []
+  const callIndexByToolCallId = new Map<string, number>()
+  const runningIndexes: number[] = []
+
+  for (const event of turnEvents) {
+    if (!isTimelineToolEvent(event)) continue
+
+    if (event.event_type === 'assistant_tool_call') {
+      const rawName = String(getTimelinePayloadValue(event, 'name') || '')
+      const normalizedToolName = normalizeToolName(rawName)
+      const args = parseJsonObjectLoose(getTimelinePayloadValue(event, 'argumentsChunk'))
+      const detail = getTimelineToolCompactDetail(event, turnEvents)
+      const artifactPath = extractArtifactPathFromCall(normalizedToolName, args)
+
+      steps.push({
+        id: event.tool_call_id || event.id,
+        toolName: normalizedToolName,
+        title: getTimelineToolName(event),
+        detail,
+        status: 'running',
+        artifactPath
+      })
+
+      const createdIndex = steps.length - 1
+      runningIndexes.push(createdIndex)
+      if (event.tool_call_id) {
+        callIndexByToolCallId.set(event.tool_call_id, createdIndex)
+      }
+      continue
+    }
+
+    const resultStatus: ToolStepStatus = getTimelineToolResultStatus(event) === 'error' ? 'error' : 'done'
+    const resultObj = parseJsonObjectLoose(getTimelinePayloadValue(event, 'result'))
+    const resultDetail = getTimelineToolCompactDetail(event, turnEvents)
+    const resultArtifactPath = extractArtifactPathFromResult(resultObj)
+
+    let targetIndex = -1
+    if (event.tool_call_id && callIndexByToolCallId.has(event.tool_call_id)) {
+      targetIndex = callIndexByToolCallId.get(event.tool_call_id) ?? -1
+    } else {
+      for (let i = runningIndexes.length - 1; i >= 0; i -= 1) {
+        const index = runningIndexes[i]
+        if (steps[index] && steps[index].status === 'running') {
+          targetIndex = index
+          runningIndexes.splice(i, 1)
+          break
+        }
+      }
+    }
+
+    if (targetIndex >= 0 && steps[targetIndex]) {
+      const step = steps[targetIndex]
+      step.status = resultStatus
+      step.detail = resultDetail || step.detail
+      if (resultArtifactPath) {
+        step.artifactPath = resultArtifactPath
+      }
+      const runningPosition = runningIndexes.lastIndexOf(targetIndex)
+      if (runningPosition >= 0) {
+        runningIndexes.splice(runningPosition, 1)
+      }
+      continue
+    }
+
+    const rawName = String(getTimelinePayloadValue(event, 'name') || '')
+    const normalizedToolName = normalizeToolName(rawName)
+    steps.push({
+      id: event.tool_call_id || event.id,
+      toolName: normalizedToolName,
+      title: getTimelineToolName(event),
+      detail: resultDetail,
+      status: resultStatus,
+      artifactPath: resultArtifactPath
+    })
+  }
+
+  return steps
+}
+
 function getTimelineToolCompactDetail(event: TimelineEvent, turnEvents: TimelineEvent[]) {
+  const cacheKey = `${event.id}:${event.seq}`
+  const cached = timelineToolCompactDetailCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
   const toolName = String(getTimelinePayloadValue(event, 'name') || '')
   const normalized = normalizeToolName(toolName)
+  let detail = ''
 
   if (event.event_type === 'assistant_tool_call') {
     const callArgs = parseJsonObjectLoose(getTimelinePayloadValue(event, 'argumentsChunk'))
-    return summarizeToolAction(normalized, callArgs)
+    detail = summarizeToolAction(normalized, callArgs)
+    setBoundedCacheValue(timelineToolCompactDetailCache, cacheKey, detail, TOOL_DETAIL_CACHE_MAX_ENTRIES)
+    return detail
   }
 
   if (event.event_type === 'assistant_tool_result') {
     const error = getTimelinePayloadValue(event, 'error')
     if (typeof error === 'string' && error.trim()) {
-      return `错误: ${shortenText(error, 72)}`
+      detail = `错误: ${shortenText(error, 72)}`
+      setBoundedCacheValue(timelineToolCompactDetailCache, cacheKey, detail, TOOL_DETAIL_CACHE_MAX_ENTRIES)
+      return detail
     }
 
     const linkedCallSummary = findLinkedToolCallSummary(event, turnEvents)
-    if (linkedCallSummary) return linkedCallSummary
+    if (linkedCallSummary) {
+      detail = linkedCallSummary
+      setBoundedCacheValue(timelineToolCompactDetailCache, cacheKey, detail, TOOL_DETAIL_CACHE_MAX_ENTRIES)
+      return detail
+    }
 
     const resultObject = parseJsonObjectLoose(getTimelinePayloadValue(event, 'result'))
-    return summarizeToolResult(normalized, resultObject)
+    detail = summarizeToolResult(normalized, resultObject)
+    setBoundedCacheValue(timelineToolCompactDetailCache, cacheKey, detail, TOOL_DETAIL_CACHE_MAX_ENTRIES)
+    return detail
   }
 
-  return ''
+  setBoundedCacheValue(timelineToolCompactDetailCache, cacheKey, detail, TOOL_DETAIL_CACHE_MAX_ENTRIES)
+  return detail
 }
 
 function findLinkedToolCallSummary(event: TimelineEvent, turnEvents: TimelineEvent[]) {
@@ -994,6 +1358,32 @@ function isTimelineReasoningCollapsed(eventId: string) {
 
 function toggleTimelineReasoning(eventId: string) {
   timelineReasoningCollapsedByEventId.value[eventId] = !isTimelineReasoningCollapsed(eventId)
+  timelineReasoningCollapsedVersion.value += 1
+}
+
+function setBoundedCacheValue<T>(cache: Map<string, T>, key: string, value: T, maxEntries: number) {
+  cache.set(key, value)
+  if (cache.size <= maxEntries) return
+  const firstKey = cache.keys().next()
+  if (!firstKey.done) {
+    cache.delete(firstKey.value)
+  }
+}
+
+function getComposerText() {
+  return composerInputRef.value?.value || ''
+}
+
+function setComposerText(value: string) {
+  const input = composerInputRef.value
+  if (!input) return
+  input.value = value
+}
+
+function handleComposerEnter(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return
+  if (isCurrentConversationStreaming.value) return
+  void sendMessage()
 }
 
 function getMessageListDistanceFromBottom(element: HTMLElement) {
@@ -1045,6 +1435,10 @@ watch(
   () => {
     pausingStream.value = false
     timelineReasoningCollapsedByEventId.value = {}
+    timelineReasoningCollapsedVersion.value += 1
+    timelineToolCompactDetailCache.clear()
+    compactToolExecutionCollapsedByTurnId.value = {}
+    compactToolExecutionVersion.value += 1
     shouldStickToMessageBottom.value = true
     scheduleScrollMessageListToBottom(true)
   },
@@ -1170,14 +1564,6 @@ const recentFolders = computed(() => {
   const paths = [createConversationWorkspaceDirectory.value, fsStore.currentDirectory, configStore.config.work_directory]
     .filter((path): path is string => Boolean(path && path.trim()))
   return Array.from(new Set(paths)).slice(0, 3)
-})
-
-const canSendMessage = computed(() => {
-  return inputMessage.value.trim().length > 0 || pendingUploads.value.length > 0
-})
-
-const canGenerateImagePrompt = computed(() => {
-  return inputMessage.value.trim().length > 0
 })
 
 const activeToolApproval = computed(() => {
@@ -1411,7 +1797,14 @@ markdownRenderer.code = (code: string, infostring: string | undefined, escaped: 
 }
 
 function renderMarkdown(content: string) {
-  return marked.parse(content || '', { async: false, renderer: markdownRenderer }) as string
+  const source = content || ''
+  const cached = markdownCache.get(source)
+  if (cached !== undefined) {
+    return cached
+  }
+  const rendered = marked.parse(source, { async: false, renderer: markdownRenderer }) as string
+  setBoundedCacheValue(markdownCache, source, rendered, MARKDOWN_CACHE_MAX_ENTRIES)
+  return rendered
 }
 
 function isExternalHttpUrl(value: string) {
@@ -1792,7 +2185,7 @@ async function handleCreateConversation() {
     chatStore.setCurrentConversation(conversation.id)
     await chatStore.loadTimeline(conversation.id)
     await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(conversation.id))
-    inputMessage.value = ''
+    setComposerText('')
     createConversationWorkspaceDirectory.value = null
     createDialogVisible.value = false
   } catch (error) {
@@ -1801,19 +2194,19 @@ async function handleCreateConversation() {
 }
 
 async function sendMessage() {
-  const content = inputMessage.value.trim()
+  const rawContent = getComposerText().trim()
   const uploads = [...pendingUploads.value]
-  if ((!content && uploads.length === 0) || !chatStore.currentConversationId || isCurrentConversationStreaming.value) return
+  if ((!rawContent && uploads.length === 0) || !chatStore.currentConversationId || isCurrentConversationStreaming.value) return
 
   const conversationId = chatStore.currentConversationId
-  const workspaceDirectory = resolveWorkspaceDirectoryForSend(uploads)
+  const workspaceDirectory = resolveWorkspaceDirectoryForSend()
   if (!workspaceDirectory) {
     ElMessage.warning('请先在“新冒险”选择工作区文件夹，或在设置中配置默认工作目录。')
     return
   }
-  const messageContentForModel = buildMessageForModel(content, uploads, workspaceDirectory)
+  const contentForModel = rawContent || '请分析这些文件，并给出清晰结论。'
 
-  inputMessage.value = ''
+  setComposerText('')
   pendingUploads.value = []
   if (pendingToolApproval.value?.conversationId === conversationId) {
     pendingToolApproval.value = null
@@ -1824,8 +2217,9 @@ async function sendMessage() {
   try {
     await invoke('stream_message', {
       conversationId,
-      content: messageContentForModel,
-      workspaceDirectory
+      content: contentForModel,
+      workspaceDirectory,
+      attachments: uploads.map((item) => toUploadedAttachmentInput(item))
     })
   } catch (error) {
     chatStore.setConversationStreaming(conversationId, false)
@@ -1835,7 +2229,7 @@ async function sendMessage() {
     }
     if (chatStore.currentConversationId === conversationId) {
       pausingStream.value = false
-      inputMessage.value = content
+      setComposerText(rawContent)
       pendingUploads.value = uploads
     }
     ElMessage.error(getErrorMessage(error, '发送消息失败'))
@@ -1856,12 +2250,12 @@ async function pauseStream() {
 }
 
 async function generateImage() {
-  const prompt = inputMessage.value.trim()
+  const prompt = getComposerText().trim()
   const conversationId = chatStore.currentConversationId
   if (!prompt || !conversationId || isCurrentConversationStreaming.value || generatingImage.value) return
 
   generatingImage.value = true
-  inputMessage.value = ''
+  setComposerText('')
 
   try {
     await invoke('generate_image', {
@@ -1870,7 +2264,7 @@ async function generateImage() {
     })
     await chatStore.loadTimeline(conversationId)
   } catch (error) {
-    inputMessage.value = prompt
+    setComposerText(prompt)
     ElMessage.error(getErrorMessage(error, '文生图失败'))
   } finally {
     generatingImage.value = false
@@ -1891,118 +2285,45 @@ async function buildUploadAttachment(path: string): Promise<UploadAttachment> {
 
   const extension = (pathInfo.extension || getPathExtension(path)).toLowerCase()
   const size = typeof pathInfo.size === 'number' && Number.isFinite(pathInfo.size) ? pathInfo.size : 0
-  const isLikelyBinary = BINARY_FILE_EXTENSIONS.has(extension)
-  const isLikelyText = TEXT_FILE_EXTENSIONS.has(extension)
-  const attachment: UploadAttachment = {
+  return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     path,
     name: getPathName(path) || path,
     extension,
-    size,
-    inlineText: null,
-    inlineTruncated: false,
-    note: ''
+    size
   }
-
-  if (isLikelyBinary) {
-    attachment.note = '该文件为二进制格式，将以文件路径方式交给模型分析。'
-    return attachment
-  }
-
-  if (size > MAX_INLINE_FILE_SIZE) {
-    attachment.note = '文件较大，已仅上传文件路径与元信息。'
-    return attachment
-  }
-
-  if (!isLikelyText && extension) {
-    attachment.note = '该类型默认按路径交给模型分析。'
-    return attachment
-  }
-
-  try {
-    const rawText = await invoke<string>('read_file', { path })
-    if (!rawText.trim()) {
-      attachment.note = '文件内容为空，将只提供文件路径。'
-      return attachment
-    }
-
-    if (rawText.length > MAX_INLINE_TEXT_CHARS) {
-      attachment.inlineText = rawText.slice(0, MAX_INLINE_TEXT_CHARS)
-      attachment.inlineTruncated = true
-      attachment.note = '文件内容过长，已截断后上传。'
-    } else {
-      attachment.inlineText = rawText
-      attachment.note = '文件内容已上传给模型。'
-    }
-  } catch {
-    attachment.note = '读取文本失败，将以文件路径方式交给模型分析。'
-  }
-
-  return attachment
 }
 
-function buildMessageForModel(content: string, uploads: UploadAttachment[], workspaceDirectory: string) {
-  if (uploads.length === 0) return content.trim()
-
-  let remainingInlineBudget = MAX_TOTAL_INLINE_CHARS
-  const lines: string[] = []
-  lines.push('【用户上传文件】')
-  lines.push(`当前工作区: ${workspaceDirectory}`)
-  lines.push('重要限制: 若需要创建/修改文件，只能在当前工作区内操作。')
-
-  for (let i = 0; i < uploads.length; i += 1) {
-    const item = uploads[i]
-    const insideWorkspace = isPathInside(workspaceDirectory, item.path)
-    lines.push(`${i + 1}. 文件名: ${item.name}`)
-    lines.push(`   路径: ${item.path}`)
-    lines.push(`   大小: ${formatBytes(item.size)}`)
-    lines.push(`   说明: ${item.note}`)
-    lines.push(`   工作区内: ${insideWorkspace ? '是' : '否'}`)
-
-    if (item.inlineText && remainingInlineBudget > 0) {
-      const textToInclude =
-        item.inlineText.length > remainingInlineBudget
-          ? item.inlineText.slice(0, remainingInlineBudget)
-          : item.inlineText
-      remainingInlineBudget -= textToInclude.length
-      lines.push('   内容片段:')
-      lines.push('```text')
-      lines.push(textToInclude)
-      lines.push('```')
-      if (item.inlineTruncated || textToInclude.length < item.inlineText.length) {
-        lines.push('   注: 内容已截断。')
-      }
-    } else {
-      if (insideWorkspace) {
-        lines.push('   内容片段: 未内联，请通过文件路径读取。')
-      } else {
-        lines.push('   内容片段: 未内联，且该路径在工作区外，无法通过工作区工具读取。')
-      }
-    }
-  }
-
-  lines.push('请优先基于上述附件内容完成分析；若内容未内联，请仅在工作区内使用可用工具读取路径。')
-
-  const userText = content.trim() || '请分析这些文件，并给出清晰结论。'
-  return `${userText}\n\n${lines.join('\n')}`
+interface UploadedAttachmentInput {
+  path: string
+  name: string
+  size: number
+  extension: string
 }
 
-function resolveWorkspaceDirectoryForSend(uploads: UploadAttachment[]) {
+function toUploadedAttachmentInput(item: UploadAttachment): UploadedAttachmentInput {
+  return {
+    path: item.path,
+    name: item.name,
+    size: item.size,
+    extension: item.extension
+  }
+}
+
+function uploadIcon(extension: string) {
+  if (extension === 'pdf') return 'picture_as_pdf'
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(extension)) return 'image'
+  if (['doc', 'docx'].includes(extension)) return 'description'
+  if (['ppt', 'pptx'].includes(extension)) return 'slideshow'
+  if (['xls', 'xlsx', 'xlsm'].includes(extension)) return 'table_chart'
+  return 'insert_drive_file'
+}
+
+function resolveWorkspaceDirectoryForSend() {
   const conversationId = chatStore.currentConversationId
   const configuredWorkspace = getEffectiveWorkspaceDirectory(conversationId)
   if (!configuredWorkspace) return null
-  if (uploads.length === 0) return configuredWorkspace
   return configuredWorkspace
-}
-
-function isPathInside(basePath: string, targetPath: string) {
-  const base = normalizePathForCompare(basePath)
-  const target = normalizePathForCompare(targetPath)
-  return target === base || target.startsWith(`${base}/`)
-}
-
-function normalizePathForCompare(value: string) {
-  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
 function getPathExtension(input: string) {

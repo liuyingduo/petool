@@ -1,4 +1,4 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -134,4 +134,3 @@ where
     fs::write(config_path, content)?;
     Ok(())
 }
-

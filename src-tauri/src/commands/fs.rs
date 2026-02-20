@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use crate::services::pdf_parse::{
+    parse_pdf_to_markdown as parse_pdf_to_markdown_service, ParsePdfOptions,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name: String,
@@ -7,6 +11,14 @@ pub struct FileInfo {
     pub is_dir: bool,
     pub size: Option<u64>,
     pub extension: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfMarkdownParseResult {
+    pub markdown: String,
+    pub image_paths: Vec<String>,
+    pub page_count: u32,
+    pub truncated: bool,
 }
 
 #[tauri::command]
@@ -100,5 +112,21 @@ pub async fn get_path_info(path: String) -> Result<FileInfo, String> {
         extension: path_buf
             .extension()
             .map(|ext| ext.to_string_lossy().to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn parse_pdf_to_markdown(path: String) -> Result<PdfMarkdownParseResult, String> {
+    let pdf_path = std::path::PathBuf::from(&path);
+    let parsed = parse_pdf_to_markdown_service(&pdf_path, ParsePdfOptions::default())?;
+    Ok(PdfMarkdownParseResult {
+        markdown: parsed.markdown,
+        image_paths: parsed
+            .image_paths
+            .into_iter()
+            .map(|item| item.to_string_lossy().to_string())
+            .collect(),
+        page_count: parsed.page_count,
+        truncated: parsed.truncated,
     })
 }

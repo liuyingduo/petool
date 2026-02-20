@@ -11,6 +11,9 @@ use crate::services::llm::{
 };
 use crate::services::mcp_client::{HttpTransport, McpClient, StdioTransport};
 use crate::services::memory::prepare_memory_prompt_and_remember_turn;
+use crate::services::pdf_parse::{
+    parse_pdf_to_markdown as parse_pdf_to_markdown_service, ParsePdfOptions,
+};
 use crate::services::scheduler::models::{
     SchedulerJobCreateInput, SchedulerJobPatchInput, SchedulerScheduleKind, SchedulerSessionTarget,
 };
@@ -105,6 +108,23 @@ pub struct GenerateImageResponse {
     image_url: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedAttachmentInput {
+    pub path: String,
+    pub name: Option<String>,
+    pub size: Option<u64>,
+    pub extension: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UploadedAttachment {
+    path: PathBuf,
+    name: String,
+    size: u64,
+    extension: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TodoStatus {
@@ -165,6 +185,7 @@ const WORKSPACE_GREP_TOOL: &str = "workspace_grep";
 const WORKSPACE_CODESEARCH_TOOL: &str = "workspace_codesearch";
 const WORKSPACE_LSP_SYMBOLS_TOOL: &str = "workspace_lsp_symbols";
 const WORKSPACE_APPLY_PATCH_TOOL: &str = "workspace_apply_patch";
+const WORKSPACE_PARSE_PDF_TOOL: &str = "workspace_parse_pdf_markdown";
 const WORKSPACE_RUN_TOOL: &str = "workspace_run_command";
 const WORKSPACE_PROCESS_START_TOOL: &str = "workspace_process_start";
 const WORKSPACE_PROCESS_LIST_TOOL: &str = "workspace_process_list";
@@ -221,6 +242,7 @@ enum RuntimeTool {
     WorkspaceCodeSearch,
     WorkspaceLspSymbols,
     WorkspaceApplyPatch,
+    WorkspaceParsePdfMarkdown,
     WorkspaceRunCommand,
     WorkspaceProcessStart,
     WorkspaceProcessList,
@@ -639,6 +661,131 @@ fn prepend_skills_usage_guidance(messages: &mut Vec<ChatMessage>, skills_guidanc
     );
 }
 
+fn normalize_uploaded_attachments(
+    attachments: Option<Vec<UploadedAttachmentInput>>,
+    workspace_root: &Path,
+) -> Result<Vec<UploadedAttachment>, String> {
+    let Some(items) = attachments else {
+        return Ok(Vec::new());
+    };
+
+    let mut normalized = Vec::new();
+    for item in items {
+        let raw_path = item.path.trim();
+        if raw_path.is_empty() {
+            continue;
+        }
+
+        let resolved = resolve_workspace_target(workspace_root, raw_path, false)?;
+        if !resolved.is_file() {
+            return Err(format!("Attachment is not a file: {}", resolved.display()));
+        }
+
+        let metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
+        let file_name = item
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| {
+                resolved
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or_else(|| resolved.to_string_lossy().to_string());
+        let extension = item
+            .extension
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+            .or_else(|| {
+                resolved
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_ascii_lowercase())
+            })
+            .unwrap_or_default();
+        let size = item.size.unwrap_or(metadata.len());
+
+        normalized.push(UploadedAttachment {
+            path: resolved,
+            name: file_name,
+            size,
+            extension,
+        });
+    }
+
+    Ok(normalized)
+}
+
+fn build_uploaded_attachments_guidance(
+    attachments: &[UploadedAttachment],
+    workspace_root: &Path,
+) -> Option<String> {
+    if attachments.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Uploaded files for this turn (hidden context, do not echo verbatim):".to_string());
+    lines.push(format!(
+        "- Workspace root: {}",
+        workspace_root.to_string_lossy()
+    ));
+    lines.push("- Use uploaded files as primary context for the current user request.".to_string());
+
+    let mut has_pdf = false;
+    for (index, item) in attachments.iter().enumerate() {
+        if item.extension == "pdf" {
+            has_pdf = true;
+        }
+        let relative_path = workspace_relative_display_path(workspace_root, &item.path);
+        lines.push(format!(
+            "{}. {} | path: {} | size: {} bytes | ext: {}",
+            index + 1,
+            item.name,
+            relative_path,
+            item.size,
+            if item.extension.is_empty() {
+                "(none)"
+            } else {
+                item.extension.as_str()
+            }
+        ));
+    }
+
+    if has_pdf {
+        lines.push("For PDF files, call `workspace_parse_pdf_markdown` first (export_images=true by default), then use returned markdown/image paths for analysis.".to_string());
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn prepend_uploaded_attachments_guidance(
+    messages: &mut Vec<ChatMessage>,
+    attachments: &[UploadedAttachment],
+    workspace_root: &Path,
+) {
+    let Some(guidance) = build_uploaded_attachments_guidance(attachments, workspace_root) else {
+        return;
+    };
+
+    messages.insert(
+        0,
+        ChatMessage {
+            role: "system".to_string(),
+            content: Some(guidance),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_details: None,
+            reasoning: None,
+        },
+    );
+}
+
 async fn build_skills_usage_guidance(skill_manager_state: &SkillManagerState) -> String {
     let manager = skill_manager_state.lock().await;
     let mut skills = manager.list_skills();
@@ -1038,6 +1185,8 @@ async fn resolve_tool_execution_decision(
             } else if tool_call.function.name == CORE_BATCH_TOOL
                 && batch_call_targets_are_safe(parsed_arguments)
             {
+                ToolApprovalDecision::AllowOnce
+            } else if tool_call.function.name == WORKSPACE_PARSE_PDF_TOOL {
                 ToolApprovalDecision::AllowOnce
             } else {
                 request_tool_approval(window, conversation_id, tool_call).await?
@@ -1983,6 +2132,7 @@ fn should_auto_allow_batch_tool(tool_name: &str) -> bool {
         tool_name,
         WORKSPACE_LIST_TOOL
             | WORKSPACE_READ_TOOL
+            | WORKSPACE_PARSE_PDF_TOOL
             | WORKSPACE_GLOB_TOOL
             | WORKSPACE_GREP_TOOL
             | WORKSPACE_CODESEARCH_TOOL
@@ -2142,6 +2292,48 @@ fn execute_workspace_read_file(arguments: &Value, workspace_root: &Path) -> Resu
         "bytes_read": end.saturating_sub(start),
         "total_bytes": total_bytes,
         "truncated": end < total_bytes || lines_truncated
+    }))
+}
+
+fn execute_workspace_parse_pdf_markdown(
+    arguments: &Value,
+    workspace_root: &Path,
+) -> Result<Value, String> {
+    let raw_path = read_path_argument(arguments, "path")?;
+    let pdf_path = resolve_workspace_target(workspace_root, &raw_path, false)?;
+    if !pdf_path.is_file() {
+        return Err(format!("Not a file: {}", pdf_path.display()));
+    }
+
+    let export_images = read_bool_argument(arguments, "export_images", true);
+    let max_pages_value = read_u64_argument(arguments, "max_pages", 0);
+    let max_pages = if max_pages_value == 0 {
+        None
+    } else {
+        Some(max_pages_value.min(5_000) as usize)
+    };
+
+    let parsed = parse_pdf_to_markdown_service(
+        &pdf_path,
+        ParsePdfOptions {
+            export_images,
+            max_pages,
+        },
+    )?;
+
+    let image_paths: Vec<String> = parsed
+        .image_paths
+        .iter()
+        .map(|path| workspace_relative_display_path(workspace_root, path))
+        .collect();
+
+    Ok(json!({
+        "workspace_root": workspace_root.to_string_lossy().to_string(),
+        "path": workspace_relative_display_path(workspace_root, &pdf_path),
+        "page_count": parsed.page_count,
+        "markdown": parsed.markdown,
+        "image_paths": image_paths,
+        "truncated": parsed.truncated
     }))
 }
 
@@ -3437,6 +3629,7 @@ async fn execute_core_batch_safe_tool(
     match tool_name {
         WORKSPACE_LIST_TOOL => execute_workspace_list_directory(arguments, workspace_root),
         WORKSPACE_READ_TOOL => execute_workspace_read_file(arguments, workspace_root),
+        WORKSPACE_PARSE_PDF_TOOL => execute_workspace_parse_pdf_markdown(arguments, workspace_root),
         WORKSPACE_GLOB_TOOL => execute_workspace_glob(arguments, workspace_root),
         WORKSPACE_GREP_TOOL => execute_workspace_grep(arguments, workspace_root),
         WORKSPACE_CODESEARCH_TOOL => execute_workspace_codesearch(arguments, workspace_root),
@@ -3558,6 +3751,9 @@ async fn execute_runtime_tool_non_scheduler(
             execute_workspace_list_directory(arguments, workspace_root)
         }
         RuntimeTool::WorkspaceReadFile => execute_workspace_read_file(arguments, workspace_root),
+        RuntimeTool::WorkspaceParsePdfMarkdown => {
+            execute_workspace_parse_pdf_markdown(arguments, workspace_root)
+        }
         RuntimeTool::WorkspaceWriteFile => execute_workspace_write_file(arguments, workspace_root),
         RuntimeTool::WorkspaceEditFile => execute_workspace_edit_file(arguments, workspace_root),
         RuntimeTool::WorkspaceGlob => execute_workspace_glob(arguments, workspace_root),
@@ -4072,6 +4268,7 @@ pub async fn stream_message(
     conversation_id: String,
     content: String,
     workspace_directory: Option<String>,
+    attachments: Option<Vec<UploadedAttachmentInput>>,
 ) -> Result<(), String> {
     let stop_flag = register_stream_stop_flag(&conversation_id).await;
 
@@ -4085,6 +4282,7 @@ pub async fn stream_message(
             available_tools,
             tool_map,
         } = build_runtime_tool_catalog(mcp_state, &config, &workspace_root).await?;
+        let uploaded_attachments = normalize_uploaded_attachments(attachments, &workspace_root)?;
 
         let pool = {
             let guard = state.lock().map_err(|e| e.to_string())?;
@@ -4130,6 +4328,11 @@ pub async fn stream_message(
         }
         prepend_tool_usage_guidance(&mut context_messages);
         prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
+        prepend_uploaded_attachments_guidance(
+            &mut context_messages,
+            &uploaded_attachments,
+            &workspace_root,
+        );
 
         let mut always_allowed_tools = HashSet::<String>::new();
         let mut last_tool_signature: Option<String> = None;

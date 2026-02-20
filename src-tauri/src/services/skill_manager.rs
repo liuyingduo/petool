@@ -1,6 +1,8 @@
-﻿use crate::models::{config::Config, skill::*};
+use crate::models::{config::Config, skill::*};
 use crate::services::node_runtime;
-use crate::utils::{load_config, resolve_effective_downloads_dir, resolve_skill_download_cache_dir};
+use crate::utils::{
+    load_config, resolve_effective_downloads_dir, resolve_skill_download_cache_dir,
+};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -1179,4 +1181,3 @@ Use weather APIs and summarize results.
         let _ = fs::remove_dir_all(&root);
     }
 }
-

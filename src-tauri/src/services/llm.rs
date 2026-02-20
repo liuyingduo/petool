@@ -570,7 +570,8 @@ impl LlmService {
                 }
 
                 if let Some(reasoning_text) = choice.delta.reasoning_content {
-                    if let Some(delta_reasoning) = append_reasoning_chunk(&mut reasoning, &reasoning_text)
+                    if let Some(delta_reasoning) =
+                        append_reasoning_chunk(&mut reasoning, &reasoning_text)
                     {
                         callback(LlmStreamEvent::Reasoning(delta_reasoning));
                     }
@@ -579,7 +580,8 @@ impl LlmService {
                 if let Some(details) = choice.delta.reasoning_details {
                     for detail in details {
                         if let Some(part) = detail.text.as_deref() {
-                            if let Some(delta_reasoning) = append_reasoning_chunk(&mut reasoning, part)
+                            if let Some(delta_reasoning) =
+                                append_reasoning_chunk(&mut reasoning, part)
                             {
                                 callback(LlmStreamEvent::Reasoning(delta_reasoning));
                             }

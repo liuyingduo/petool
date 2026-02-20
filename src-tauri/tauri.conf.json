@@ -36,7 +36,8 @@
       "binaries/browser-node"
     ],
     "resources": [
-      "resources/browser-sidecar"
+      "resources/browser-sidecar",
+      "resources/pdfium"
     ],
     "icon": [
       "icons/32x32.png",

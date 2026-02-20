@@ -12,9 +12,10 @@ use super::{
     SKILL_DISCOVER_TOOL, SKILL_EXECUTE_TOOL, SKILL_INSTALL_TOOL, SKILL_LIST_TOOL, TODO_READ_TOOL,
     TODO_WRITE_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WORKSPACE_APPLY_PATCH_TOOL,
     WORKSPACE_CODESEARCH_TOOL, WORKSPACE_EDIT_TOOL, WORKSPACE_GLOB_TOOL, WORKSPACE_GREP_TOOL,
-    WORKSPACE_LIST_TOOL, WORKSPACE_LSP_SYMBOLS_TOOL, WORKSPACE_PROCESS_LIST_TOOL,
-    WORKSPACE_PROCESS_READ_TOOL, WORKSPACE_PROCESS_START_TOOL, WORKSPACE_PROCESS_TERMINATE_TOOL,
-    WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL, WORKSPACE_WRITE_TOOL,
+    WORKSPACE_LIST_TOOL, WORKSPACE_LSP_SYMBOLS_TOOL, WORKSPACE_PARSE_PDF_TOOL,
+    WORKSPACE_PROCESS_LIST_TOOL, WORKSPACE_PROCESS_READ_TOOL, WORKSPACE_PROCESS_START_TOOL,
+    WORKSPACE_PROCESS_TERMINATE_TOOL, WORKSPACE_READ_TOOL, WORKSPACE_RUN_TOOL,
+    WORKSPACE_WRITE_TOOL,
 };
 
 fn register_runtime_tool(
@@ -84,6 +85,26 @@ pub(super) fn collect_workspace_tools(
             "required": ["path"]
         }),
         RuntimeTool::WorkspaceReadFile,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        WORKSPACE_PARSE_PDF_TOOL,
+        format!(
+            "Parse a PDF file inside workspace into ordered markdown (top-to-bottom, left-to-right), optionally extracting embedded images. Workspace root: {}",
+            root_hint
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "PDF file path. Relative paths are resolved from workspace root." },
+                "export_images": { "type": "boolean", "description": "Default true. When true, export images and include markdown image links." },
+                "max_pages": { "type": "integer", "description": "Default 0 (all pages). Limit parsed pages for very large PDFs." }
+            },
+            "required": ["path"]
+        }),
+        RuntimeTool::WorkspaceParsePdfMarkdown,
     );
 
     register_runtime_tool(

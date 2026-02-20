@@ -1,5 +1,5 @@
-use crate::utils::{load_config, save_config};
 use crate::models::config::Config;
+use crate::utils::{load_config, save_config};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -133,7 +133,11 @@ pub async fn petool_logout() -> Result<(), String> {
 #[tauri::command]
 pub async fn petool_is_logged_in() -> Result<bool, String> {
     let config = load_config::<Config>().map_err(|e| e.to_string())?;
-    Ok(config.petool_token.as_deref().map(|t| !t.is_empty()).unwrap_or(false))
+    Ok(config
+        .petool_token
+        .as_deref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false))
 }
 
 /// 获取个人资料
@@ -180,12 +184,17 @@ pub async fn petool_get_quota() -> Result<QuotaDashboard, String> {
         return Err(format!("获取额度失败: {}", resp.status()));
     }
 
-    resp.json::<QuotaDashboard>().await.map_err(|e| e.to_string())
+    resp.json::<QuotaDashboard>()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 获取消费明细（分页）
 #[tauri::command]
-pub async fn petool_get_usage(page: Option<i64>, page_size: Option<i64>) -> Result<UsagePage, String> {
+pub async fn petool_get_usage(
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<UsagePage, String> {
     let config = load_config::<Config>().map_err(|e| e.to_string())?;
     let base = get_petool_base(&config);
     let token = get_petool_token(&config)?;
@@ -195,7 +204,10 @@ pub async fn petool_get_usage(page: Option<i64>, page_size: Option<i64>) -> Resu
 
     let client = Client::new();
     let resp = client
-        .get(format!("{}/account/usage?page={}&page_size={}", base, p, ps))
+        .get(format!(
+            "{}/account/usage?page={}&page_size={}",
+            base, p, ps
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -227,7 +239,9 @@ pub async fn petool_get_orders() -> Result<Vec<serde_json::Value>, String> {
         return Err(format!("获取订单失败: {}", resp.status()));
     }
 
-    resp.json::<Vec<serde_json::Value>>().await.map_err(|e| e.to_string())
+    resp.json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 创建支付订单（微信 / 支付宝）
@@ -260,7 +274,9 @@ pub async fn petool_create_order(
         return Err(err["detail"].as_str().unwrap_or("下单失败").to_string());
     }
 
-    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 查询订单支付状态（前端轮询用）
@@ -282,5 +298,7 @@ pub async fn petool_query_order(out_trade_no: String) -> Result<serde_json::Valu
         return Err(format!("查询失败: {}", resp.status()));
     }
 
-    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())
 }
