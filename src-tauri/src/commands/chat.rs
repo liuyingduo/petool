@@ -6,10 +6,11 @@ use crate::models::config::{
 };
 use crate::services::desktop::{self, types::DesktopToolRequest};
 use crate::services::llm::{
-    reasoning_details_from_text, ChatMessage, ChatTool, ChatToolCall, ChatToolFunction, LlmService, LlmStreamEvent,
-    LlmStreamResult,
+    reasoning_details_from_text, ChatMessage, ChatTool, ChatToolCall, ChatToolFunction, LlmService,
+    LlmStreamEvent, LlmStreamResult,
 };
 use crate::services::mcp_client::{HttpTransport, McpClient, StdioTransport};
+use crate::services::memory::prepare_memory_prompt_and_remember_turn;
 use crate::services::scheduler::models::{
     SchedulerJobCreateInput, SchedulerJobPatchInput, SchedulerScheduleKind, SchedulerSessionTarget,
 };
@@ -370,8 +371,7 @@ async fn load_conversation_context(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(|value| value.to_string());
-                let reasoning_details =
-                    reasoning.as_deref().and_then(reasoning_details_from_text);
+                let reasoning_details = reasoning.as_deref().and_then(reasoning_details_from_text);
 
                 messages.push(ChatMessage {
                     role,
@@ -559,6 +559,33 @@ fn prepend_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<
             reasoning: None,
         },
     );
+}
+
+async fn maybe_prepare_memory_prompt(
+    pool: &SqlitePool,
+    config: &Config,
+    model: &str,
+    conversation_id: &str,
+    user_content: &str,
+) -> Option<String> {
+    match prepare_memory_prompt_and_remember_turn(
+        pool,
+        config,
+        model,
+        conversation_id,
+        user_content,
+    )
+    .await
+    {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            eprintln!(
+                "[memory] prepare prompt failed for conversation {}: {}",
+                conversation_id, error
+            );
+            None
+        }
+    }
 }
 
 fn prepend_tool_usage_guidance(messages: &mut Vec<ChatMessage>) {
@@ -1232,10 +1259,11 @@ pub(crate) async fn run_agent_turn_background(
         } else {
             Some(stream_result.reasoning.clone())
         };
-        let assistant_reasoning_details = stream_result
-            .reasoning_details
-            .clone()
-            .or_else(|| assistant_reasoning.as_deref().and_then(reasoning_details_from_text));
+        let assistant_reasoning_details = stream_result.reasoning_details.clone().or_else(|| {
+            assistant_reasoning
+                .as_deref()
+                .and_then(reasoning_details_from_text)
+        });
 
         if stream_result.tool_calls.is_empty() {
             if request.persist_main_context {
@@ -3977,6 +4005,11 @@ pub async fn send_message(
 
     let mut messages = load_conversation_context(&pool, &conversation_id).await?;
     prepend_system_prompt(&mut messages, config.system_prompt.as_deref());
+    if let Some(memory_prompt) =
+        maybe_prepare_memory_prompt(&pool, &config, &model_to_use, &conversation_id, &content).await
+    {
+        prepend_system_prompt(&mut messages, Some(memory_prompt.as_str()));
+    }
 
     let response = llm_service
         .chat(&model_to_use, messages)
@@ -4089,6 +4122,12 @@ pub async fn stream_message(
 
         let mut context_messages = load_conversation_context(&pool, &conversation_id).await?;
         prepend_system_prompt(&mut context_messages, config.system_prompt.as_deref());
+        if let Some(memory_prompt) =
+            maybe_prepare_memory_prompt(&pool, &config, &model_to_use, &conversation_id, &content)
+                .await
+        {
+            prepend_system_prompt(&mut context_messages, Some(memory_prompt.as_str()));
+        }
         prepend_tool_usage_guidance(&mut context_messages);
         prepend_skills_usage_guidance(&mut context_messages, &skills_guidance);
 
@@ -4123,10 +4162,12 @@ pub async fn stream_message(
             } else {
                 Some(stream_result.reasoning.clone())
             };
-            let assistant_reasoning_details = stream_result
-                .reasoning_details
-                .clone()
-                .or_else(|| assistant_reasoning.as_deref().and_then(reasoning_details_from_text));
+            let assistant_reasoning_details =
+                stream_result.reasoning_details.clone().or_else(|| {
+                    assistant_reasoning
+                        .as_deref()
+                        .and_then(reasoning_details_from_text)
+                });
 
             if stream_result.cancelled {
                 for tool_call in &stream_result.tool_calls {

@@ -108,12 +108,22 @@ impl Database {
                 FOREIGN KEY (job_id) REFERENCES scheduler_jobs(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS memory_snapshots (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_message_events_conversation_turn_seq ON message_events(conversation_id, turn_id, seq);
             CREATE INDEX IF NOT EXISTS idx_message_events_conversation_created ON message_events(conversation_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_enabled_next_run ON scheduler_jobs(enabled, next_run_at);
             CREATE INDEX IF NOT EXISTS idx_scheduler_runs_job_created ON scheduler_runs(job_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_scheduler_runs_source_created ON scheduler_runs(source, created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_snapshots_user_updated ON memory_snapshots(user_id, updated_at);
             "#,
         )
         .execute(&pool)
