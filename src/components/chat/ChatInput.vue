@@ -423,6 +423,15 @@ watch(
   font-size: 20px;
 }
 
+.send-stop-square {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
 @media (max-width: 900px) {
   .upload-strip {
     margin: 0 14px 8px;

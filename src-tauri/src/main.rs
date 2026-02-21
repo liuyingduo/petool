@@ -16,7 +16,6 @@ use services::skill_manager::SkillManager;
 use state::AppState;
 use state::AppStateInner;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
@@ -99,7 +98,7 @@ async fn main() {
             let app_handle = app.handle().clone();
 
             // Create app state
-            let app_state: AppState = Arc::new(StdMutex::new(AppStateInner::new()));
+            let app_state: AppState = Arc::new(tokio::sync::Mutex::new(AppStateInner::new()));
             app.manage(app_state.clone());
 
             // Create MCP manager
@@ -131,11 +130,9 @@ async fn main() {
             tauri::async_runtime::spawn(async move {
                 if let Ok(db) = Database::new(db_path).await {
                     let pool = db.pool().clone();
-                    if let Ok(mut state) = app_state_clone.lock() {
+                    {
+                        let mut state = app_state_clone.lock().await;
                         state.set_db(db);
-                    } else {
-                        eprintln!("Failed to acquire app state lock while setting database");
-                        return;
                     }
 
                     if let Err(error) = initialize_scheduler(
@@ -162,18 +159,18 @@ async fn main() {
             config::submit_feedback,
             config::app_exit_now,
             // Chat commands
-            chat::send_message,
-            chat::stream_message,
-            chat::stop_stream,
-            chat::generate_image,
-            chat::resolve_tool_approval,
-            chat::get_conversations,
-            chat::get_messages,
-            chat::get_conversation_timeline,
-            chat::create_conversation,
-            chat::delete_conversation,
-            chat::rename_conversation,
-            chat::update_conversation_model,
+            chat::commands::send_message,
+            chat::commands::stream_message,
+            chat::commands::stop_stream,
+            chat::commands::generate_image,
+            chat::commands::resolve_tool_approval,
+            chat::commands::get_conversations,
+            chat::commands::get_messages,
+            chat::commands::get_conversation_timeline,
+            chat::commands::create_conversation,
+            chat::commands::delete_conversation,
+            chat::commands::rename_conversation,
+            chat::commands::update_conversation_model,
             // File system commands
             fs::select_folder,
             fs::scan_directory,

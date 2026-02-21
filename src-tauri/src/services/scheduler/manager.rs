@@ -48,7 +48,7 @@ fn default_job_tool_whitelist() -> Vec<String> {
 pub struct SchedulerManager {
     app_handle: AppHandle,
     pool: SqlitePool,
-    ctx: SchedulerExecutionContext,
+    pub(crate) ctx: SchedulerExecutionContext,
     stop_flag: Arc<AtomicBool>,
     running_jobs: Arc<tokio::sync::Mutex<HashSet<String>>>,
     running_conversations: Arc<tokio::sync::Mutex<HashSet<String>>>,
@@ -89,7 +89,7 @@ impl SchedulerManager {
                 break;
             }
 
-            if let Err(error) = self.tick_once().await {
+            if let Err(error) = self.clone().tick_once().await {
                 eprintln!("scheduler tick failed: {}", error);
             }
 
@@ -148,15 +148,17 @@ impl SchedulerManager {
         Ok(())
     }
 
-    async fn tick_once(&self) -> Result<(), String> {
+    async fn tick_once(self: Arc<Self>) -> Result<(), String> {
         let config = load_config::<Config>().map_err(|e| e.to_string())?;
         if !config.automation.enabled {
             return Ok(());
         }
 
         self.ensure_heartbeat_target(&config).await?;
-        self.poll_due_jobs(&config.automation).await?;
-        self.poll_heartbeat(&config).await?;
+        let manager = self.clone();
+        manager.poll_due_jobs(&config.automation).await?;
+        let manager = self.clone();
+        manager.poll_heartbeat(&config).await?;
         self.emit_status().await?;
         Ok(())
     }
@@ -167,7 +169,7 @@ impl SchedulerManager {
         Ok(())
     }
 
-    async fn poll_due_jobs(&self, automation: &AutomationConfig) -> Result<(), String> {
+    async fn poll_due_jobs(self: Arc<Self>, automation: &AutomationConfig) -> Result<(), String> {
         let max_concurrent = automation.max_concurrent_runs.max(1) as usize;
         let running_count = self.running_jobs.lock().await.len();
         if running_count >= max_concurrent {
@@ -179,14 +181,15 @@ impl SchedulerManager {
         let due_jobs = store::list_due_jobs(&self.pool, &now.to_rfc3339(), limit).await?;
 
         for job in due_jobs {
-            self.start_job_execution(job, SchedulerRunSource::Job, now.to_rfc3339())
+            let manager = self.clone();
+            manager.start_job_execution(job, SchedulerRunSource::Job, now.to_rfc3339())
                 .await?;
         }
 
         Ok(())
     }
 
-    async fn poll_heartbeat(&self, config: &Config) -> Result<(), String> {
+    async fn poll_heartbeat(self: Arc<Self>, config: &Config) -> Result<(), String> {
         if !config.automation.heartbeat.enabled {
             return Ok(());
         }
@@ -242,48 +245,55 @@ impl SchedulerManager {
             updated_at: now.to_rfc3339(),
         };
 
-        self.execute_heartbeat_job(heartbeat_job, now.to_rfc3339())
+        let manager = self.clone();
+        manager.execute_heartbeat_job(heartbeat_job, now.to_rfc3339())
             .await?;
 
-        let mut last_run = self.heartbeat_last_run.lock().await;
-        *last_run = Some(now);
+        {
+            let mut last_run = self.heartbeat_last_run.lock().await;
+            *last_run = Some(now);
+        }
         Ok(())
     }
 
     async fn execute_heartbeat_job(
-        &self,
+        self: Arc<Self>,
         heartbeat_job: SchedulerJob,
         triggered_at: String,
     ) -> Result<(), String> {
         let source = SchedulerRunSource::Heartbeat;
-        let started_at = Utc::now();
-        let result = execute_scheduler_job(&self.ctx, source.clone(), &heartbeat_job).await;
-        let ended_at = Utc::now();
+        let job_id = heartbeat_job.id.clone();
 
-        let run = SchedulerRun {
-            id: Uuid::new_v4().to_string(),
-            source,
-            job_id: None,
-            job_name_snapshot: "heartbeat".to_string(),
-            target_conversation_id: heartbeat_job.target_conversation_id,
-            session_target: SchedulerSessionTarget::Heartbeat,
-            triggered_at,
-            started_at: started_at.to_rfc3339(),
-            ended_at: ended_at.to_rfc3339(),
-            status: result.status,
-            error: result.error,
-            summary: result.summary,
-            output_text: result.output_text,
-            detail_json: result.detail_json,
-            created_at: ended_at.to_rfc3339(),
-        };
-        store::insert_run(&self.pool, &run).await?;
-        let _ = self.app_handle.emit("scheduler-run-event", &run);
+        {
+            let mut running_jobs = self.running_jobs.lock().await;
+            if running_jobs.contains(&job_id) {
+                return Ok(());
+            }
+            running_jobs.insert(job_id.clone());
+        }
+
+        if let Err(error) =
+            store::set_job_running(&self.pool, &job_id, Some(&triggered_at)).await
+        {
+            {
+                let mut running_jobs = self.running_jobs.lock().await;
+                running_jobs.remove(&job_id);
+            }
+            return Err(error);
+        }
+
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = manager.run_job_execution(heartbeat_job, source, triggered_at).await {
+                eprintln!("scheduler heartbeat task failed: {}", error);
+            }
+        });
+
         Ok(())
     }
 
     async fn start_job_execution(
-        &self,
+        self: Arc<Self>,
         job: SchedulerJob,
         source: SchedulerRunSource,
         triggered_at: String,
@@ -303,7 +313,10 @@ impl SchedulerManager {
         if let Err(error) =
             store::set_job_running(&self.pool, &job_id, Some(&Utc::now().to_rfc3339())).await
         {
-            let _ = self.running_jobs.lock().await.remove(&job_id);
+            {
+                let mut running_jobs = self.running_jobs.lock().await;
+                running_jobs.remove(&job_id);
+            }
             return Err(error);
         }
 
@@ -320,158 +333,158 @@ impl SchedulerManager {
         })
     }
 
-    async fn run_job_execution(
-        &self,
+    pub async fn run_job_execution(
+        self: Arc<Self>,
         mut job: SchedulerJob,
         source: SchedulerRunSource,
         triggered_at: String,
     ) -> Result<(), String> {
         let started_at = Utc::now();
-        let mut conversation_acquired = false;
-        let run_result: Result<(), String> = async {
-            let conversation_busy = {
+        let session_acquired = {
+            if job.session_target == SchedulerSessionTarget::Isolated {
                 let mut running_conversations = self.running_conversations.lock().await;
                 if running_conversations.contains(&job.target_conversation_id) {
-                    true
+                    false
                 } else {
                     running_conversations.insert(job.target_conversation_id.clone());
-                    conversation_acquired = true;
-                    false
+                    true
                 }
-            };
-
-            if conversation_busy {
-                let run = SchedulerRun {
-                    id: Uuid::new_v4().to_string(),
-                    source: source.clone(),
-                    job_id: Some(job.id.clone()),
-                    job_name_snapshot: job.name.clone(),
-                    target_conversation_id: job.target_conversation_id.clone(),
-                    session_target: job.session_target.clone(),
-                    triggered_at: triggered_at.clone(),
-                    started_at: started_at.to_rfc3339(),
-                    ended_at: Utc::now().to_rfc3339(),
-                    status: SchedulerRunStatus::Skipped,
-                    error: Some("conversation_busy".to_string()),
-                    summary: Some("conversation busy".to_string()),
-                    output_text: None,
-                    detail_json: json!({ "error": "conversation_busy" }),
-                    created_at: Utc::now().to_rfc3339(),
-                };
-                store::insert_run(&self.pool, &run).await?;
-                let _ = self.app_handle.emit("scheduler-run-event", &run);
-                return Ok(());
+            } else {
+                true
             }
+        };
 
-            let result = execute_scheduler_job(&self.ctx, source.clone(), &job).await;
-            let ended_at = Utc::now();
-
-            let mut should_delete_job = false;
+        if !session_acquired {
+            let _ = self.running_jobs.lock().await.remove(&job.id);
             if source == SchedulerRunSource::Job {
-                if let Some(latest) = store::get_job(&self.pool, &job.id).await? {
-                    job = latest;
-                    job.running_at = None;
-                    job.last_run_at = Some(started_at.to_rfc3339());
-                    job.last_status = Some(result.status.clone());
-                    job.last_error = result.error.clone();
-                    job.last_duration_ms = Some(
-                        ended_at
-                            .signed_duration_since(started_at)
-                            .num_milliseconds(),
-                    );
-                    job.updated_at = ended_at.to_rfc3339();
-
-                    if result.status == SchedulerRunStatus::Error {
-                        job.consecutive_errors += 1;
-                    } else {
-                        job.consecutive_errors = 0;
-                    }
-
-                    if job.schedule_kind == SchedulerScheduleKind::At {
-                        if result.status == SchedulerRunStatus::Ok && job.delete_after_run {
-                            should_delete_job = true;
-                        } else {
-                            job.enabled = false;
-                            job.next_run_at = None;
-                        }
-                    } else {
-                        let next = compute_next_after_result(
-                            &job,
-                            result.status.clone(),
-                            ended_at,
-                            job.consecutive_errors,
-                        );
-                        job.next_run_at = to_rfc3339(next);
-                    }
-
-                    if should_delete_job {
-                        let _ = store::delete_job(&self.pool, &job.id).await;
-                    } else {
-                        let _ = store::update_job(&self.pool, &job).await;
-                    }
-                }
+                let _ = store::set_job_running(&self.pool, &job.id, None).await;
             }
 
             let run = SchedulerRun {
                 id: Uuid::new_v4().to_string(),
                 source: source.clone(),
-                job_id: if source == SchedulerRunSource::Job {
-                    Some(job.id.clone())
-                } else {
-                    None
-                },
+                job_id: if source == SchedulerRunSource::Job { Some(job.id.clone()) } else { None },
                 job_name_snapshot: job.name.clone(),
                 target_conversation_id: job.target_conversation_id.clone(),
                 session_target: job.session_target.clone(),
                 triggered_at: triggered_at.clone(),
                 started_at: started_at.to_rfc3339(),
-                ended_at: ended_at.to_rfc3339(),
-                status: result.status.clone(),
-                error: result.error.clone(),
-                summary: result.summary.clone(),
-                output_text: result.output_text,
-                detail_json: result.detail_json,
-                created_at: ended_at.to_rfc3339(),
+                ended_at: Utc::now().to_rfc3339(),
+                status: SchedulerRunStatus::Skipped,
+                error: Some("session_busy".to_string()),
+                summary: Some("session busy".to_string()),
+                output_text: None,
+                detail_json: json!({ "error": "session_busy" }),
+                created_at: Utc::now().to_rfc3339(),
             };
             store::insert_run(&self.pool, &run).await?;
-
             let _ = self.app_handle.emit("scheduler-run-event", &run);
-            if source == SchedulerRunSource::Job {
+
+            return Err("session-busy".to_string());
+        }
+
+        let result = execute_scheduler_job(self.clone(), source.clone(), job.clone()).await;
+        let ended_at = Utc::now();
+
+        let mut should_delete_job = false;
+        if source == SchedulerRunSource::Job {
+            if let Some(latest) = store::get_job(&self.pool, &job.id).await? {
+                job = latest;
+                job.running_at = None;
+                job.last_run_at = Some(started_at.to_rfc3339());
+                job.last_status = Some(result.status.clone());
+                job.last_error = result.error.clone();
+                job.last_duration_ms = Some(
+                    ended_at
+                        .signed_duration_since(started_at)
+                        .num_milliseconds(),
+                );
+                job.updated_at = ended_at.to_rfc3339();
+
+                if result.status == SchedulerRunStatus::Error {
+                    job.consecutive_errors += 1;
+                } else {
+                    job.consecutive_errors = 0;
+                }
+
+                if job.schedule_kind == SchedulerScheduleKind::At {
+                    if result.status == SchedulerRunStatus::Ok && job.delete_after_run {
+                        should_delete_job = true;
+                    } else {
+                        job.enabled = false;
+                        job.next_run_at = None;
+                    }
+                } else {
+                    let next = compute_next_after_result(
+                        &job,
+                        result.status.clone(),
+                        ended_at,
+                        job.consecutive_errors,
+                    );
+                    job.next_run_at = to_rfc3339(next);
+                }
+
                 if should_delete_job {
-                    let _ = self.app_handle.emit(
-                        "scheduler-job-event",
-                        json!({
-                            "event": "removed",
-                            "jobId": job.id,
-                        }),
-                    );
-                } else if let Some(updated) = store::get_job(&self.pool, &job.id).await? {
-                    let _ = self.app_handle.emit(
-                        "scheduler-job-event",
-                        json!({
-                            "event": "updated",
-                            "job": updated,
-                        }),
-                    );
+                    let _ = store::delete_job(&self.pool, &job.id).await;
+                } else {
+                    let _ = store::update_job(&self.pool, &job).await;
                 }
             }
-
-            Ok(())
         }
-        .await;
+
+        let run = SchedulerRun {
+            id: Uuid::new_v4().to_string(),
+            source: source.clone(),
+            job_id: if source == SchedulerRunSource::Job { Some(job.id.clone()) } else { None },
+            job_name_snapshot: job.name.clone(),
+            target_conversation_id: job.target_conversation_id.clone(),
+            session_target: job.session_target.clone(),
+            triggered_at: triggered_at.clone(),
+            started_at: started_at.to_rfc3339(),
+            ended_at: ended_at.to_rfc3339(),
+            status: result.status.clone(),
+            error: result.error.clone(),
+            summary: result.summary.clone(),
+            output_text: result.output_text,
+            detail_json: result.detail_json,
+            created_at: ended_at.to_rfc3339(),
+        };
+        store::insert_run(&self.pool, &run).await?;
+
+        let _ = self.app_handle.emit("scheduler-run-event", &run);
+        if source == SchedulerRunSource::Job {
+            if should_delete_job {
+                let _ = self.app_handle.emit(
+                    "scheduler-job-event",
+                    json!({
+                        "event": "removed",
+                        "jobId": job.id,
+                    }),
+                );
+            } else if let Some(updated) = store::get_job(&self.pool, &job.id).await? {
+                let _ = self.app_handle.emit(
+                    "scheduler-job-event",
+                    json!({
+                        "event": "updated",
+                        "job": updated,
+                    }),
+                );
+            }
+        }
 
         if source == SchedulerRunSource::Job {
             let _ = store::set_job_running(&self.pool, &job.id, None).await;
         }
         let _ = self.running_jobs.lock().await.remove(&job.id);
-        if conversation_acquired {
-            self.running_conversations
+        if job.session_target == SchedulerSessionTarget::Isolated {
+            let _ = self
+                .running_conversations
                 .lock()
                 .await
                 .remove(&job.target_conversation_id);
         }
 
-        run_result
+        result.error.map(Err).unwrap_or(Ok(()))
     }
 
     async fn ensure_heartbeat_target(&self, config: &Config) -> Result<(), String> {
@@ -742,7 +755,7 @@ impl SchedulerManager {
         Ok(removed)
     }
 
-    pub async fn run_job_now(&self, job_id: &str) -> Result<SchedulerRunRequest, String> {
+    pub async fn run_job_now(self: Arc<Self>, job_id: &str) -> Result<SchedulerRunRequest, String> {
         let job = store::get_job(&self.pool, job_id)
             .await?
             .ok_or_else(|| format!("Job not found: {}", job_id))?;
@@ -762,7 +775,7 @@ impl SchedulerManager {
         store::get_run(&self.pool, run_id).await
     }
 
-    pub async fn run_heartbeat_now(&self) -> Result<SchedulerRunRequest, String> {
+    pub async fn run_heartbeat_now(self: Arc<Self>) -> Result<SchedulerRunRequest, String> {
         let config = load_config::<Config>().map_err(|e| e.to_string())?;
         if !config.automation.enabled || !config.automation.heartbeat.enabled {
             return Ok(SchedulerRunRequest {
@@ -813,7 +826,8 @@ impl SchedulerManager {
             updated_at: now.to_rfc3339(),
         };
 
-        self.execute_heartbeat_job(heartbeat_job, now.to_rfc3339())
+        let manager = self.clone();
+        manager.execute_heartbeat_job(heartbeat_job, now.to_rfc3339())
             .await?;
         let mut last_run = self.heartbeat_last_run.lock().await;
         *last_run = Some(now);

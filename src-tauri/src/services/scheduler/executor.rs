@@ -3,6 +3,8 @@ use crate::commands::chat::{
 };
 use crate::commands::mcp::McpState;
 use crate::commands::skills::SkillManagerState;
+use std::sync::Arc;
+use super::manager::SchedulerManager;
 use crate::state::AppState;
 use chrono::Utc;
 use serde_json::json;
@@ -75,17 +77,25 @@ async fn insert_summary_message(
 }
 
 pub async fn execute_scheduler_job(
-    ctx: &SchedulerExecutionContext,
+    manager: Arc<SchedulerManager>,
     source: SchedulerRunSource,
-    job: &SchedulerJob,
+    job: SchedulerJob,
 ) -> SchedulerExecutionResult {
     let persist_main_context = matches!(job.session_target, SchedulerSessionTarget::Main)
         || matches!(source, SchedulerRunSource::Heartbeat);
 
+    let (app_state, mcp_state, skill_state) = {
+        (
+            manager.ctx.app_state.clone(),
+            manager.ctx.mcp_state.clone(),
+            manager.ctx.skill_state.clone(),
+        )
+    };
+
     let run_result = run_agent_turn_background(
-        ctx.app_state.clone(),
-        ctx.mcp_state.clone(),
-        ctx.skill_state.clone(),
+        app_state.clone(),
+        mcp_state,
+        skill_state,
         BackgroundAgentRunRequest {
             target_conversation_id: job.target_conversation_id.clone(),
             content: job.message.clone(),
@@ -111,25 +121,7 @@ pub async fn execute_scheduler_job(
                 && !matches!(source, SchedulerRunSource::Heartbeat)
             {
                 let pool = {
-                    let guard = match ctx.app_state.lock() {
-                        Ok(guard) => guard,
-                        Err(error) => {
-                            return SchedulerExecutionResult {
-                                status: SchedulerRunStatus::Error,
-                                error: Some(error.to_string()),
-                                summary: Some(summary),
-                                output_text: Some(content),
-                                detail_json: json!({
-                                    "reasoning": reasoning,
-                                    "rounds": rounds,
-                                    "toolCalls": tool_calls,
-                                    "blockedTools": blocked_tools,
-                                    "guardStopped": guard_stopped,
-                                    "failedToWriteSummary": true
-                                }),
-                            }
-                        }
-                    };
+                    let guard = app_state.lock().await;
                     guard.db().pool().clone()
                 };
                 let summary_text = format!("[Scheduled isolated run] {}", summary);

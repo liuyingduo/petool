@@ -32,6 +32,7 @@ use std::sync::Arc;
 #[allow(unused_variables)]
 pub fn create_llm(config: &LLMConfig) -> Result<Arc<dyn LLM>, LLMError> {
     #[cfg(feature = "openai")]
+    #[allow(irrefutable_let_patterns)]
     if let LLMConfig::OpenAI(cfg) = config {
         return Ok(Arc::new(OpenAILLM::new(cfg.clone())?));
     }

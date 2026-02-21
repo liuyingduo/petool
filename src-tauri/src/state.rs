@@ -1,4 +1,4 @@
-pub type AppState = std::sync::Arc<std::sync::Mutex<AppStateInner>>;
+pub type AppState = std::sync::Arc<tokio::sync::Mutex<AppStateInner>>;
 
 pub struct AppStateInner {
     pub db: Option<crate::services::database::Database>,
