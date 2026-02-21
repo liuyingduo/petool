@@ -377,7 +377,7 @@ pub(super) fn collect_workspace_tools(
         format!(
             "List direct children of a directory in the local workspace (non-recursive peek). \
              Avoid using this for recursive traversal, file counting, folder-size calculation, or large inventory tasks. \
-             On Windows, prefer workspace_run_command with PowerShell for those operations. Workspace root: {}",
+             On Windows, prefer bash with PowerShell for those operations. Workspace root: {}",
             root_hint
         ),
         json!({

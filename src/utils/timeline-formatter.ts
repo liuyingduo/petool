@@ -406,7 +406,7 @@ export function summarizeToolAction(toolName: string, args: Record<string, unkno
         if (query) return `搜索: ${shortenText(query, 56)}`
     }
 
-    if (toolName === 'workspace_run_command') {
+    if (toolName === 'bash') {
         const command = pick('command')
         if (command) return `执行命令: ${shortenText(command, 68)}`
     }

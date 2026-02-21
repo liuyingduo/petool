@@ -1923,8 +1923,11 @@ pub(crate) async fn execute_tool_call(
     default_model: &str,
 ) -> Result<Value, String> {
     let raw_arguments_str = tool_call.function.arguments.clone();
-    let (tool_name, raw_arguments) = if tool_call.function.name == "bash" {
-        ("workspace_run_command", recover_tool_arguments_candidate(&raw_arguments_str).unwrap_or(raw_arguments_str))
+    let (tool_name, raw_arguments) = if tool_call.function.name == WORKSPACE_RUN_TOOL {
+        (
+            tool_call.function.name.as_str(),
+            recover_tool_arguments_candidate(&raw_arguments_str).unwrap_or(raw_arguments_str),
+        )
     } else {
         (tool_call.function.name.as_str(), raw_arguments_str)
     };
@@ -1963,8 +1966,11 @@ pub(crate) async fn execute_tool_call_background(
     default_model: &str,
 ) -> Result<Value, String> {
     let raw_arguments_str = tool_call.function.arguments.clone();
-    let (tool_name, raw_arguments) = if tool_call.function.name == "bash" {
-        ("workspace_run_command", recover_tool_arguments_candidate(&raw_arguments_str).unwrap_or(raw_arguments_str))
+    let (tool_name, raw_arguments) = if tool_call.function.name == WORKSPACE_RUN_TOOL {
+        (
+            tool_call.function.name.as_str(),
+            recover_tool_arguments_candidate(&raw_arguments_str).unwrap_or(raw_arguments_str),
+        )
     } else {
         (tool_call.function.name.as_str(), raw_arguments_str)
     };

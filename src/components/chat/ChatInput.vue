@@ -225,7 +225,7 @@ watch(
 .input-bar {
   width: 100%;
   max-width: 900px;
-  margin: 0 0 32px;
+  margin: 0 0 12px;
   flex-shrink: 0;
   border-radius: 999px;
   background: #FFFFFF;

@@ -154,7 +154,7 @@ pub(crate) async fn maybe_prepare_memory_prompt(
 pub(crate) fn prepend_tool_usage_guidance(messages: &mut Vec<ChatMessage>) {
     let guidance = if cfg!(target_os = "windows") {
         "Tool selection policy (Windows): \
-Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
+Prefer bash for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
 Use concise PowerShell commands for these operations (for example: Get-ChildItem -Recurse -File | Measure-Object, or Get-ChildItem -Recurse | Measure-Object -Property Length -Sum). \
 Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually. \
 Desktop automation policy (UFO-style): \
@@ -165,7 +165,7 @@ For browser action=act or action=act_batch, action items must use field `kind` (
 Use click_on_coordinates only as fallback when the target control is missing from control list."
     } else {
         "Tool selection policy: \
-Prefer workspace_run_command for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
+Prefer bash for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
 Use shell pipelines for these operations. \
 Use workspace_list_directory only for quick non-recursive inspection of one directory level or when the user explicitly asks to browse items manually."
     };

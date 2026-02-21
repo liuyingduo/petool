@@ -814,7 +814,7 @@ const approvalSubtitle = computed(() => {
   if (toolName === 'workspace_write_file') {
     return '为了应用你的修改请求，我需要写入这个文件。'
   }
-  if (toolName === 'workspace_run_command') {
+  if (toolName === 'bash') {
     return '为了完成你的请求，我需要运行一条本地命令。'
   }
   if (toolName === 'desktop') {
@@ -839,7 +839,7 @@ const approvalDetailText = computed(() => {
   if ((toolName === 'workspace_read_file' || toolName === 'workspace_write_file') && typeof args.path === 'string') {
     return `路径：${truncateMiddle(args.path, 72)}`
   }
-  if (toolName === 'workspace_run_command' && typeof args.command === 'string') {
+  if (toolName === 'bash' && typeof args.command === 'string') {
     return `命令：${truncateMiddle(args.command, 72)}`
   }
   if (toolName === 'desktop') {
