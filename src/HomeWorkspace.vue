@@ -124,7 +124,7 @@
         </aside>
 
         <section class="chat-wrap">
-          <div class="chat-body" :class="{ creating: createDialogVisible, 'monitor-open': !taskMonitorCollapsed }">
+          <div class="chat-body" :class="{ creating: createDialogVisible }">
           <div v-if="createDialogVisible" class="create-mask"></div>
 
           <div v-if="createDialogVisible" class="create-dialog">
@@ -353,7 +353,6 @@
               </section>
             </aside>
           </div>
-        </div>
 
         <div v-if="activeToolApproval" class="tool-approval-card">
           <div class="tool-approval-header">
@@ -473,6 +472,7 @@
             <span v-if="isCurrentConversationStreaming" class="send-stop-square" aria-hidden="true"></span>
             <span v-else class="material-icons-round">arrow_upward</span>
           </button>
+        </div>
         </div>
         </section>
       </div>
@@ -1445,6 +1445,12 @@ function updateShouldStickToMessageBottom() {
     shouldStickToMessageBottom.value = true
     return
   }
+  
+  if (isCurrentConversationStreaming.value) {
+    shouldStickToMessageBottom.value = true
+    return
+  }
+
   shouldStickToMessageBottom.value = getMessageListDistanceFromBottom(element) <= AUTO_SCROLL_BOTTOM_THRESHOLD
 }
 
@@ -2286,6 +2292,8 @@ async function sendMessage() {
   }
   chatStore.setConversationStreaming(conversationId, true)
   pausingStream.value = false
+  shouldStickToMessageBottom.value = true
+  scheduleScrollMessageListToBottom(true)
 
   try {
     await invoke('stream_message', {

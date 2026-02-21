@@ -514,9 +514,7 @@ label {
   align-items: center;
 }
 
-.chat-body.monitor-open {
-  padding-right: 332px;
-}
+
 
 .chat-body.creating {
   display: flex;
@@ -1186,7 +1184,9 @@ label {
 }
 
 .tool-approval-card {
-  margin: 0 24px 12px;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 0 12px;
   border-radius: 20px;
   border: 1px solid #eadfca;
   background: #fffdfa;
@@ -1348,24 +1348,37 @@ label {
   width: 286px;
   max-height: calc(100% - var(--chat-content-top-safe) - 8px);
   z-index: 20;
+  transition: transform 0.24s ease;
+}
+
+.task-monitor-shell.collapsed {
+  transform: translateX(calc(100% + 16px));
 }
 
 .task-monitor-toggle {
   position: absolute;
-  top: 14px;
-  left: -32px;
+  top: 16px;
+  left: -26px;
   width: 26px;
   height: 56px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.8);
   border-right: none;
-  border-radius: 12px 0 0 12px;
-  background: #fff;
-  color: #94a3b8;
+  border-radius: 14px 0 0 14px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: #9ca3af;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: -6px 8px 14px -14px rgba(0, 0, 0, 0.35);
+  box-shadow: -8px 12px 24px -12px rgba(44, 62, 51, 0.15);
+  transition: box-shadow 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+.task-monitor-toggle:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #57534e;
 }
 
 .task-monitor-toggle .material-icons-round {
@@ -1373,82 +1386,96 @@ label {
 }
 
 .task-monitor-card {
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #F3F4F6;
-  border-radius: 20px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 24px;
+  box-shadow:
+    0 20px 40px -12px rgba(44, 62, 51, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.9);
   overflow: hidden;
   max-height: 100%;
   overflow-y: auto;
-  transition: transform 0.24s ease, opacity 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
 }
 
 .task-monitor-shell.collapsed .task-monitor-card {
-  transform: translateX(calc(100% + 10px));
   opacity: 0;
   pointer-events: none;
 }
 
 .task-monitor-shell.collapsed .task-monitor-toggle {
-  left: -28px;
+  left: -26px;
+  box-shadow: -4px 0 10px rgba(0, 0, 0, 0.05);
 }
 
 .task-monitor-title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 800;
-  color: #1f2937;
-  padding: 14px 14px 10px;
+  color: #2c3e33;
+  padding: 16px 18px 12px;
+  letter-spacing: 0.02em;
 }
 
 .task-monitor-section {
-  border-top: 1px dashed #e5e7eb;
+  border-top: 1px solid rgba(234, 232, 228, 0.6);
 }
 
 .task-monitor-section-head {
   width: 100%;
   border: none;
   background: transparent;
-  padding: 10px 14px;
+  padding: 12px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   cursor: pointer;
-  color: #4b5563;
-  font-size: 16px;
+  color: #57534e;
+  font-size: 13px;
   font-weight: 700;
+  transition: background-color 0.2s ease;
+}
+
+.task-monitor-section-head:hover {
+  background: rgba(255, 255, 255, 0.4);
 }
 
 .task-monitor-section-head .material-icons-round {
   font-size: 18px;
-  color: #9ca3af;
+  color: #a8a29e;
+  transition: transform 0.2s ease;
 }
 
 .task-monitor-section-body {
-  padding: 0 14px 12px;
+  padding: 0 18px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .task-monitor-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   min-height: 18px;
 }
 
 .task-monitor-row-label {
   font-size: 13px;
-  color: #374151;
-  line-height: 1.45;
+  color: #44403c;
+  line-height: 1.5;
   word-break: break-word;
+  font-weight: 600;
 }
 
 .task-monitor-row-sub {
   font-size: 11px;
   color: #9ca3af;
-  line-height: 1.3;
-  margin-top: 1px;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 
 .task-monitor-artifact-content {
@@ -1494,7 +1521,7 @@ label {
 .upload-strip {
   width: 100%;
   max-width: 900px;
-  margin: 0 auto 10px;
+  margin: 0 0 10px;
   border-radius: 16px;
   border: 1px solid #e7efe8;
   background: #f8fcf9;
@@ -1568,7 +1595,7 @@ label {
 .input-bar {
   width: 100%;
   max-width: 900px;
-  margin-bottom: 32px;
+  margin: 0 0 32px;
   flex-shrink: 0;
   border-radius: 999px;
   background: #FFFFFF;
