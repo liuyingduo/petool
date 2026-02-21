@@ -211,11 +211,13 @@ export const useConfigStore = defineStore('config', () => {
   })
 
   const loading = ref(false)
+  const loaded = ref(false)
 
   async function loadConfig() {
     loading.value = true
     try {
       config.value = await invoke<Config>('get_config')
+      loaded.value = true
     } catch (error) {
       console.error('Failed to load config:', error)
     } finally {
@@ -245,9 +247,9 @@ export const useConfigStore = defineStore('config', () => {
   return {
     config,
     loading,
+    loaded,
     loadConfig,
     saveConfig,
     validateApiKey
   }
 })
-

@@ -10,12 +10,13 @@ const routes: RouteRecordRaw[] = [
     path: '/login',
     name: 'login',
     component: LoginView,
-    meta: { public: true },  // 不需要登录
+    meta: { public: true }
   },
   {
     path: '/',
     name: 'home',
-    component: HomeWorkspace
+    component: HomeWorkspace,
+    meta: { keepAlive: true }
   },
   {
     path: '/settings',
@@ -51,10 +52,19 @@ const router = createRouter({
   routes
 })
 
-// 路由守卫：未登录跳转到 /login，已登录访问 /login 跳转回首页
-router.beforeEach(async (to) => {
+// Route guard:
+// 1) Unauthenticated users are redirected to /login.
+// 2) Already-authenticated users visiting /login are redirected to /.
+// 3) Protected -> protected route switches skip repeated auth IPC for speed.
+router.beforeEach(async (to, from) => {
+  const fromIsProtected = from.matched.length > 0 && from.matched.every((record) => !record.meta.public)
+  const toIsProtected = to.matched.length > 0 && to.matched.every((record) => !record.meta.public)
+
+  if (fromIsProtected && toIsProtected) {
+    return true
+  }
+
   if (to.meta.public) {
-    // 已登录访问登录页 → 直接回首页
     try {
       const loggedIn = await invoke<boolean>('petool_is_logged_in')
       if (loggedIn) return '/'
@@ -64,15 +74,14 @@ router.beforeEach(async (to) => {
     return true
   }
 
-  // 其他页面需要登录
   try {
     const loggedIn = await invoke<boolean>('petool_is_logged_in')
     if (!loggedIn) return '/login'
   } catch {
     return '/login'
   }
+
   return true
 })
 
 export default router
-

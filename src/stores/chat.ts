@@ -56,6 +56,7 @@ interface TimelineEventInput {
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([])
+  const conversationsLoaded = ref(false)
   const messages = ref<Record<string, Message[]>>({})
   const currentConversationId = ref<string | null>(null)
   const loading = ref(false)
@@ -63,6 +64,7 @@ export const useChatStore = defineStore('chat', () => {
   const streamingByConversation = ref<Record<string, boolean>>({})
   const timelineByConversation = ref<Record<string, TimelineEvent[]>>({})
   const timelineLegacyByConversation = ref<Record<string, boolean>>({})
+  const timelineLoadedByConversation = ref<Record<string, boolean>>({})
 
   const currentMessages = computed(() => {
     if (!currentConversationId.value) return []
@@ -91,6 +93,7 @@ export const useChatStore = defineStore('chat', () => {
     } catch (error) {
       console.error('Failed to load conversations:', error)
     } finally {
+      conversationsLoaded.value = true
       loading.value = false
     }
   }
@@ -118,6 +121,7 @@ export const useChatStore = defineStore('chat', () => {
       timelineByConversation.value[conversationId] = []
       timelineLegacyByConversation.value[conversationId] = false
     } finally {
+      timelineLoadedByConversation.value[conversationId] = true
       loading.value = false
     }
   }
@@ -140,6 +144,7 @@ export const useChatStore = defineStore('chat', () => {
       delete messages.value[id]
       delete timelineByConversation.value[id]
       delete timelineLegacyByConversation.value[id]
+      delete timelineLoadedByConversation.value[id]
       delete streamingByConversation.value[id]
       streaming.value = Object.values(streamingByConversation.value).some(Boolean)
       if (currentConversationId.value === id) {
@@ -231,6 +236,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!timelineByConversation.value[conversationId]) {
       timelineByConversation.value[conversationId] = []
     }
+    timelineLoadedByConversation.value[conversationId] = true
     timelineLegacyByConversation.value[conversationId] = false
 
     const normalizedEvent: TimelineEvent = {
@@ -266,6 +272,10 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       target.splice(insertIndex, 0, normalizedEvent)
     }
+  }
+
+  function isTimelineLoaded(conversationId: string) {
+    return Boolean(timelineLoadedByConversation.value[conversationId])
   }
 
   function normalizeTimelineEvents(events: TimelineEvent[]) {
@@ -384,11 +394,26 @@ export const useChatStore = defineStore('chat', () => {
     return base + chunk
   }
 
+  function resetState() {
+    conversations.value = []
+    conversationsLoaded.value = false
+    messages.value = {}
+    currentConversationId.value = null
+    loading.value = false
+    streaming.value = false
+    streamingByConversation.value = {}
+    timelineByConversation.value = {}
+    timelineLegacyByConversation.value = {}
+    timelineLoadedByConversation.value = {}
+  }
+
   return {
     conversations,
+    conversationsLoaded,
     messages,
     timelineByConversation,
     timelineLegacyByConversation,
+    timelineLoadedByConversation,
     currentConversationId,
     currentMessages,
     currentConversation,
@@ -400,6 +425,8 @@ export const useChatStore = defineStore('chat', () => {
     loadConversations,
     loadMessages,
     loadTimeline,
+    isTimelineLoaded,
+    resetState,
     createConversation,
     deleteConversation,
     renameConversation,

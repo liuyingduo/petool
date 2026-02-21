@@ -58,12 +58,12 @@
             <div class="sidebar-avatar">
               <img
                 alt="User"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuBYaZM97JogdW-ya3ULqGOtiyNOHmX7QgQJQ1c7qMdDxTpN__9ZBn0Jq6D5AQiHwClbXSmKaP3yFa-GzJuTHIsZ6OObIjCQ9QHApIpAuKMYIWptOHH6KVzLGp4nU5DO48mIg48o3YedtwFShv6G0Tq-ir30SVT7WgAWCksaPf_PnwnEwCx7rOimt23ZlQC3VUyfRbucQrEvpTkLIEwEwiWZ_gSWFyekl4IxXUqKEUqrS2CVHHlvuJqUmCJBLBYKUuDKiuQqkueqB3Y"
+                :src="displayAvatar"
               >
             </div>
             <div class="sidebar-user-text">
-              <span class="name">Alex</span>
-              <span class="plan">Pro Plan</span>
+              <span class="name">{{ displayName }}</span>
+              <span class="plan">{{ displayPlan }}</span>
             </div>
           </div>
           <button class="sidebar-settings-btn" type="button" aria-label="设置">
@@ -95,11 +95,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke } from '@tauri-apps/api/core'
 import { useConfigStore } from '@/stores/config'
+import { useWindowControls } from '@/composables/useWindowControls'
+import { useDisplayProfile } from '@/composables/useDisplayProfile'
 import GeneralSettingsPage from './settings/GeneralSettingsPage.vue'
 import NotificationSettingsPage from './settings/NotificationSettingsPage.vue'
 import AboutPetoolPage from './settings/AboutPetoolPage.vue'
@@ -112,8 +112,8 @@ type SettingsSection = 'general' | 'notifications' | 'about' | 'advanced'
 
 const route = useRoute()
 const router = useRouter()
-const appWindow = getCurrentWindow()
-const isWindowMaximized = ref(false)
+const { isWindowMaximized, handleMinimize, handleToggleMaximize, handleClose } = useWindowControls()
+const { displayName, displayAvatar, displayPlan, loadDisplayProfile } = useDisplayProfile()
 const configStore = useConfigStore()
 
 const sectionItems: Array<{ key: SettingsSection; label: string; icon: string }> = [
@@ -173,33 +173,9 @@ function goAboutPage(page: 'feedback' | 'tutorial' | 'agreement') {
 }
 
 onMounted(() => {
-  void configStore.loadConfig()
+  void Promise.all([configStore.loadConfig(), loadDisplayProfile()])
 })
 
-async function handleMinimize() {
-  try {
-    await appWindow.minimize()
-  } catch {
-    // ignore
-  }
-}
-
-async function handleToggleMaximize() {
-  try {
-    await appWindow.toggleMaximize()
-    isWindowMaximized.value = await appWindow.isMaximized()
-  } catch {
-    // ignore
-  }
-}
-
-async function handleClose() {
-  try {
-    await invoke('app_exit_now')
-  } catch {
-    // ignore
-  }
-}
 </script>
 
 <style src="@/styles/settings-shell.css"></style>

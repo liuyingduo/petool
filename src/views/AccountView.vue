@@ -70,10 +70,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
+import { useWindowControls } from '@/composables/useWindowControls'
+import { useChatStore } from '@/stores/chat'
 import ProfilePage from './account/ProfilePage.vue'
 import RenewPage from './account/RenewPage.vue'
 import OrdersPage from './account/OrdersPage.vue'
@@ -83,8 +84,8 @@ type AccountSection = 'profile' | 'renew' | 'orders' | 'quota'
 
 const route = useRoute()
 const router = useRouter()
-const appWindow = getCurrentWindow()
-const isWindowMaximized = ref(false)
+const chatStore = useChatStore()
+const { isWindowMaximized, handleMinimize, handleToggleMaximize, handleClose } = useWindowControls()
 
 const sectionItems: Array<{ key: AccountSection; label: string; icon: string }> = [
   { key: 'profile', label: '个人资料', icon: 'person' },
@@ -109,34 +110,10 @@ function goSection(section: AccountSection) {
   void router.push(`/account/${section}`)
 }
 
-async function handleMinimize() {
-  try {
-    await appWindow.minimize()
-  } catch {
-    // ignore
-  }
-}
-
-async function handleToggleMaximize() {
-  try {
-    await appWindow.toggleMaximize()
-    isWindowMaximized.value = await appWindow.isMaximized()
-  } catch {
-    // ignore
-  }
-}
-
-async function handleClose() {
-  try {
-    await invoke('app_exit_now')
-  } catch {
-    // ignore
-  }
-}
-
 async function handleLogout() {
   try {
     await invoke('petool_logout')
+    chatStore.resetState()
   } catch {
     // ignore
   }

@@ -164,6 +164,7 @@ async function handleSaveFile() {
 .info-tabs :deep(.el-tabs__header) {
   margin: 0;
   background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .info-tabs :deep(.el-tabs__nav-wrap) {
@@ -246,17 +247,19 @@ async function handleSaveFile() {
 
 .file-tree-pane {
   border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: 12px;
+  padding: 12px;
   overflow: auto;
+  background: var(--color-surface);
 }
 
 .file-editor-pane {
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 12px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--color-surface);
 }
 
 .editor-header {

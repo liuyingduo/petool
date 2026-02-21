@@ -50,9 +50,9 @@
 
         <div class="sidebar-title">进行中</div>
 
-        <div class="conversation-list no-scrollbar">
+        <div class="conversation-list no-scrollbar" v-memo="sidebarListMemoDeps">
           <div
-            v-for="(conv, index) in conversationsForDisplay"
+            v-for="conv in conversationsForDisplay"
             :key="conv.id"
             class="conv-item-row"
             :class="{ active: conv.id === chatStore.currentConversationId }"
@@ -63,7 +63,6 @@
               @click="handleSelectConversation(conv.id)"
             >
               <span class="dot"></span>
-              <span class="material-icons-round">{{ getConversationIcon(index) }}</span>
               <span class="conv-title">{{ conv.title }}</span>
             </button>
             <div class="conv-menu-anchor">
@@ -103,24 +102,24 @@
 
         <div class="sidebar-footer">
           <button
-            class="sidebar-user account-entry-btn"
+            class="sidebar-user-card account-entry-btn"
             type="button"
             title="账户中心"
             @click="openAccountCenter"
           >
-            <div class="sidebar-avatar-wrap">
-              <img class="sidebar-avatar" :src="userAvatarUrl" alt="User Avatar" />
-            </div>
             <div class="sidebar-user-meta">
-              <span class="sidebar-user-name">Alex</span>
-              <span class="sidebar-user-plan">Pro Plan</span>
+              <div class="sidebar-avatar">
+                <img :src="displayAvatar" alt="User Avatar" />
+              </div>
+              <div class="sidebar-user-text">
+                <span class="name">{{ displayName }}</span>
+                <span class="plan">{{ displayPlan }}</span>
+              </div>
             </div>
           </button>
-          <div class="sidebar-entry-actions">
-            <button class="settings-btn" @click="openSettingsCenter" title="系统设置">
-              <span class="material-icons-round">settings</span>
-            </button>
-          </div>
+          <button class="sidebar-settings-btn" @click="openSettingsCenter" title="系统设置">
+            <span class="material-icons-round">settings</span>
+          </button>
         </div>
         </aside>
 
@@ -182,14 +181,14 @@
               <div v-if="turn.userText" class="message-row user">
                 <div class="message-meta user-meta">
                   <span class="time">{{ formatTime(turn.userCreatedAt) }}</span>
+                  <span class="name">{{ displayName }}</span>
                   <div class="message-avatar">
-                    <img class="avatar-img" :src="userAvatarUrl" alt="User Avatar" />
+                    <img class="avatar-img" :src="displayAvatar" alt="User Avatar" />
                   </div>
                 </div>
                 <div class="bubble">
                   <div v-html="renderMarkdown(turn.userText)"></div>
                 </div>
-                <div class="read-status">已读</div>
               </div>
 
               <div v-if="turn.assistantEvents.length > 0" class="message-row assistant">
@@ -204,7 +203,7 @@
                     class="timeline-event"
                   >
                     <template v-if="event.event_type === 'assistant_reasoning'">
-                      <div v-if="isToolDisplayFull" class="reasoning">
+                      <div class="reasoning">
                         <button class="reasoning-toggle" @click="toggleTimelineReasoning(event.id)">
                           <span>思考过程</span>
                           <span class="reasoning-state">{{ isTimelineReasoningCollapsed(event.id) ? '已折叠' : '展开中' }}</span>
@@ -215,11 +214,6 @@
                         <div v-show="!isTimelineReasoningCollapsed(event.id)" class="reasoning-content">
                           {{ getTimelineReasoningText(event) }}
                         </div>
-                      </div>
-                      <div v-else class="reasoning-compact">
-                        <span class="material-icons-round">psychology_alt</span>
-                        <span class="reasoning-compact-label">Thought</span>
-                        <span class="reasoning-compact-text">{{ getCompactReasoningSummary(event) }}</span>
                       </div>
                     </template>
 
@@ -236,20 +230,20 @@
                         </div>
                       </div>
                       <div
-                        v-else-if="shouldRenderCompactToolSummary(turn.turnId, event, turn.assistantEvents)"
+                        v-else-if="shouldRenderCompactToolSummary(turn.turnId, event.id)"
                         class="tool-compact-batch"
                       >
-                        <button class="tool-batch-toggle" @click="toggleTurnToolExecution(turn.turnId)">
+                        <button class="tool-batch-toggle" @click="toggleToolExecutionGroup(turn.turnId, event.id)">
                           <span class="material-icons-round">terminal</span>
                           <span class="tool-batch-title">查看执行工具</span>
-                          <span class="tool-batch-count">{{ getTurnToolExecutions(turn.turnId).length }} step</span>
+                          <span class="tool-batch-count">{{ getToolExecutionGroupSteps(turn.turnId, event.id).length }} step</span>
                           <span class="material-icons-round">
-                            {{ isTurnToolExecutionCollapsed(turn.turnId) ? 'expand_more' : 'expand_less' }}
+                            {{ isToolExecutionGroupCollapsed(turn.turnId, event.id) ? 'expand_more' : 'expand_less' }}
                           </span>
                         </button>
-                        <div v-show="!isTurnToolExecutionCollapsed(turn.turnId)" class="tool-batch-list">
+                        <div v-show="!isToolExecutionGroupCollapsed(turn.turnId, event.id)" class="tool-batch-list">
                           <div
-                            v-for="step in getTurnToolExecutions(turn.turnId)"
+                            v-for="step in getToolExecutionGroupSteps(turn.turnId, event.id)"
                             :key="step.id"
                             class="tool-batch-item"
                             :class="step.status"
@@ -457,18 +451,7 @@
           <button class="attach-btn" @click="handleSelectUploadFiles" :disabled="createDialogVisible || isCurrentConversationStreaming">
             <span class="material-icons-round">attach_file</span>
           </button>
-          <button
-            class="image-btn"
-            :disabled="
-              createDialogVisible ||
-              !chatStore.currentConversationId ||
-              isCurrentConversationStreaming ||
-              generatingImage
-            "
-            @click="generateImage"
-          >
-            <span class="material-icons-round">{{ generatingImage ? 'hourglass_top' : 'image' }}</span>
-          </button>
+
           <input
             ref="composerInputRef"
             type="text"
@@ -499,7 +482,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -516,6 +499,7 @@ import {
   type ToolApprovalRequest
 } from './composables/useChatEventBridge'
 import { usePetWindowBehavior } from './composables/usePetWindowBehavior'
+import { useDisplayProfile } from './composables/useDisplayProfile'
 import { normalizeToolName, renderToolLabel, truncateMiddle } from './utils/toolDisplay'
 
 interface UploadAttachment {
@@ -544,6 +528,7 @@ const chatStore = useChatStore()
 const configStore = useConfigStore()
 const fsStore = useFilesystemStore()
 const router = useRouter()
+const { displayName, displayAvatar, displayPlan, loadDisplayProfile } = useDisplayProfile()
 const useCustomWindowChrome = import.meta.env.VITE_CUSTOM_CHROME !== '0'
 
 const newConversationTitle = ref('')
@@ -556,7 +541,7 @@ const messageListRef = ref<HTMLElement | null>(null)
 const pendingToolApproval = ref<ToolApprovalRequest | null>(null)
 const resolvingToolApproval = ref(false)
 const pausingStream = ref(false)
-const generatingImage = ref(false)
+
 const isWindowMaximized = ref(false)
 const handlingClosePrompt = ref(false)
 const unlistenFns: Array<() => void> = []
@@ -570,8 +555,6 @@ const {
   teardownCursorPassthrough
 } =
   usePetWindowBehavior(workspaceRef)
-const userAvatarUrl =
-  'https://lh3.googleusercontent.com/aida-public/AB6AXuBYaZM97JogdW-ya3ULqGOtiyNOHmX7QgQJQ1c7qMdDxTpN__9ZBn0Jq6D5AQiHwClbXSmKaP3yFa-GzJuTHIsZ6OObIjCQ9QHApIpAuKMYIWptOHH6KVzLGp4nU5DO48mIg48o3YedtwFShv6G0Tq-ir30SVT7WgAWCksaPf_PnwnEwCx7rOimt23ZlQC3VUyfRbucQrEvpTkLIEwEwiWZ_gSWFyekl4IxXUqKEUqrS2CVHHlvuJqUmCJBLBYKUuDKiuQqkueqB3Y'
 const modelOptionsBase = [
   'glm-5',
   'doubao-seed-1-6-thinking-250715',
@@ -609,6 +592,7 @@ function dedupeConversationIds(ids: string[]) {
 }
 
 const pinnedConversationIds = ref<string[]>(dedupeConversationIds(loadPinnedConversationIds()))
+const pinnedConversationIdSet = computed(() => new Set(pinnedConversationIds.value))
 
 function persistPinnedConversationIds(ids: string[]) {
   const normalized = dedupeConversationIds(ids)
@@ -635,11 +619,23 @@ const shouldShowStandaloneTypingBubble = computed(() => {
 })
 
 const conversationsForDisplay = computed(() => {
-  const pinnedSet = new Set(pinnedConversationIds.value)
+  const pinnedSet = pinnedConversationIdSet.value
   const pinned = chatStore.conversations.filter((conversation) => pinnedSet.has(conversation.id))
   const unpinned = chatStore.conversations.filter((conversation) => !pinnedSet.has(conversation.id))
   return [...pinned, ...unpinned]
 })
+
+const conversationStreamingRenderToken = computed(() =>
+  conversationsForDisplay.value
+    .map((conversation) => `${conversation.id}:${chatStore.isConversationStreaming(conversation.id) ? 1 : 0}`)
+    .join('|')
+)
+
+const sidebarListMemoDeps = computed(() => [
+  conversationsForDisplay.value,
+  chatStore.currentConversationId || '',
+  conversationStreamingRenderToken.value
+])
 
 const conversationModelId = computed(() => {
   const source = chatStore.currentConversation?.model || configStore.config.model || modelOptionsBase[0]
@@ -675,7 +671,7 @@ const timelineReasoningCollapsedByEventId = ref<Record<string, boolean>>({})
 const timelineReasoningCollapsedVersion = ref(0)
 const markdownCache = new Map<string, string>()
 const timelineToolCompactDetailCache = new Map<string, string>()
-const compactToolExecutionCollapsedByTurnId = ref<Record<string, boolean>>({})
+const compactToolExecutionCollapsedByGroupKey = ref<Record<string, boolean>>({})
 const compactToolExecutionVersion = ref(0)
 const taskMonitorCollapsed = ref(false)
 const monitorSectionsOpen = ref({
@@ -693,6 +689,12 @@ interface CompactToolExecutionStep {
   detail: string
   status: ToolStepStatus
   artifactPath: string
+}
+
+interface CompactToolExecutionGroup {
+  key: string
+  firstEventId: string
+  steps: CompactToolExecutionStep[]
 }
 
 interface MonitorTodoItem {
@@ -771,10 +773,19 @@ const messageListMemoDeps = computed(() => [
   compactToolExecutionVersion.value
 ])
 
+const turnToolExecutionGroupsByTurnId = computed<Record<string, CompactToolExecutionGroup[]>>(() => {
+  const map: Record<string, CompactToolExecutionGroup[]> = {}
+  for (const turn of timelineTurnsForDisplay.value) {
+    map[turn.turnId] = buildCompactToolExecutionGroups(turn.turnId, turn.assistantEvents)
+  }
+  return map
+})
+
 const turnToolExecutionsByTurnId = computed<Record<string, CompactToolExecutionStep[]>>(() => {
   const map: Record<string, CompactToolExecutionStep[]> = {}
   for (const turn of timelineTurnsForDisplay.value) {
-    map[turn.turnId] = buildTurnToolExecutionSteps(turn.assistantEvents)
+    const groups = turnToolExecutionGroupsByTurnId.value[turn.turnId] || []
+    map[turn.turnId] = groups.flatMap((group) => group.steps)
   }
   return map
 })
@@ -899,37 +910,45 @@ function getTimelineToolDisplayText(event: TimelineEvent) {
   return ''
 }
 
-function getCompactReasoningSummary(event: TimelineEvent) {
-  const text = getTimelineReasoningText(event)
-  if (!text.trim()) return '思考中...'
-  return shortenText(text, 72)
-}
-
 function formatToolStepStatus(status: ToolStepStatus) {
   if (status === 'running') return '执行中'
   if (status === 'done') return '已完成'
   return '执行失败'
 }
 
-function isTurnToolExecutionCollapsed(turnId: string) {
-  return compactToolExecutionCollapsedByTurnId.value[turnId] ?? true
+function getToolExecutionGroup(turnId: string, firstEventId: string) {
+  const groups = turnToolExecutionGroupsByTurnId.value[turnId] || []
+  for (const group of groups) {
+    if (group.firstEventId === firstEventId) return group
+  }
+  return null
 }
 
-function toggleTurnToolExecution(turnId: string) {
-  compactToolExecutionCollapsedByTurnId.value[turnId] = !isTurnToolExecutionCollapsed(turnId)
+function getToolExecutionGroupKey(turnId: string, firstEventId: string) {
+  const group = getToolExecutionGroup(turnId, firstEventId)
+  return group?.key || `${turnId}:${firstEventId}`
+}
+
+function isToolExecutionGroupCollapsed(turnId: string, firstEventId: string) {
+  const key = getToolExecutionGroupKey(turnId, firstEventId)
+  return compactToolExecutionCollapsedByGroupKey.value[key] ?? true
+}
+
+function toggleToolExecutionGroup(turnId: string, firstEventId: string) {
+  const key = getToolExecutionGroupKey(turnId, firstEventId)
+  compactToolExecutionCollapsedByGroupKey.value[key] = !isToolExecutionGroupCollapsed(turnId, firstEventId)
   compactToolExecutionVersion.value += 1
 }
 
-function getTurnToolExecutions(turnId: string) {
-  return turnToolExecutionsByTurnId.value[turnId] || []
+function getToolExecutionGroupSteps(turnId: string, firstEventId: string) {
+  const group = getToolExecutionGroup(turnId, firstEventId)
+  return group?.steps || []
 }
 
-function shouldRenderCompactToolSummary(turnId: string, event: TimelineEvent, turnEvents: TimelineEvent[]) {
-  if (isToolDisplayFull.value || !isTimelineToolEvent(event)) return false
-  const firstToolEvent = turnEvents.find((item) => isTimelineToolEvent(item))
-  if (!firstToolEvent) return false
-  const hasExecutions = getTurnToolExecutions(turnId).length > 0
-  return hasExecutions && firstToolEvent.id === event.id
+function shouldRenderCompactToolSummary(turnId: string, firstEventId: string) {
+  if (isToolDisplayFull.value) return false
+  const group = getToolExecutionGroup(turnId, firstEventId)
+  return Boolean(group && group.steps.length > 0)
 }
 
 function toggleTaskMonitor() {
@@ -987,6 +1006,36 @@ function extractArtifactPathFromResult(result: Record<string, unknown> | null) {
     readNestedString(result, 'data.path') ||
     readNestedString(result, 'result.path')
   )
+}
+
+function buildCompactToolExecutionGroups(turnId: string, turnEvents: TimelineEvent[]) {
+  const groups: CompactToolExecutionGroup[] = []
+  let currentGroupEvents: TimelineEvent[] = []
+
+  const flushGroup = () => {
+    if (currentGroupEvents.length === 0) return
+    const firstEventId = currentGroupEvents[0].id
+    const steps = buildTurnToolExecutionSteps(currentGroupEvents)
+    if (steps.length > 0) {
+      groups.push({
+        key: `${turnId}:${firstEventId}`,
+        firstEventId,
+        steps
+      })
+    }
+    currentGroupEvents = []
+  }
+
+  for (const event of turnEvents) {
+    if (isTimelineToolEvent(event)) {
+      currentGroupEvents.push(event)
+      continue
+    }
+    flushGroup()
+  }
+
+  flushGroup()
+  return groups
 }
 
 function buildTurnToolExecutionSteps(turnEvents: TimelineEvent[]): CompactToolExecutionStep[] {
@@ -1437,7 +1486,7 @@ watch(
     timelineReasoningCollapsedByEventId.value = {}
     timelineReasoningCollapsedVersion.value += 1
     timelineToolCompactDetailCache.clear()
-    compactToolExecutionCollapsedByTurnId.value = {}
+    compactToolExecutionCollapsedByGroupKey.value = {}
     compactToolExecutionVersion.value += 1
     shouldStickToMessageBottom.value = true
     scheduleScrollMessageListToBottom(true)
@@ -1690,12 +1739,28 @@ const approvalDetailText = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([chatStore.loadConversations(), configStore.loadConfig()])
+  const bootTasks: Array<Promise<unknown>> = []
+  bootTasks.push(loadDisplayProfile())
+  if (!chatStore.conversationsLoaded) {
+    bootTasks.push(chatStore.loadConversations())
+  }
+  if (!configStore.loaded) {
+    bootTasks.push(configStore.loadConfig())
+  }
+  if (bootTasks.length > 0) {
+    await Promise.all(bootTasks)
+  }
+
   if (chatStore.conversations.length > 0) {
-    const first = chatStore.conversations[0]
-    chatStore.setCurrentConversation(first.id)
-    await chatStore.loadTimeline(first.id)
-    await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(first.id))
+    const currentId = chatStore.currentConversationId
+    const hasCurrent = Boolean(currentId) && chatStore.conversations.some((item) => item.id === currentId)
+    const targetConversationId = hasCurrent ? String(currentId) : chatStore.conversations[0].id
+
+    chatStore.setCurrentConversation(targetConversationId)
+    if (!chatStore.isTimelineLoaded(targetConversationId)) {
+      await chatStore.loadTimeline(targetConversationId)
+    }
+    await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(targetConversationId))
     createDialogVisible.value = false
   } else {
     await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
@@ -1741,6 +1806,18 @@ onMounted(async () => {
   }
 
   scheduleScrollMessageListToBottom(true)
+})
+
+onActivated(() => {
+  if (useCustomWindowChrome) {
+    setupCursorPassthrough()
+    void syncWindowMaximizedState()
+  }
+  scheduleScrollMessageListToBottom(true)
+})
+
+onDeactivated(() => {
+  teardownCursorPassthrough()
 })
 
 onBeforeUnmount(() => {
@@ -1913,10 +1990,6 @@ async function handleSelectModel(model: string) {
   }
 }
 
-function getConversationIcon(index: number) {
-  const icons = ['folder', 'event_note', 'palette', 'description', 'topic', 'dashboard']
-  return icons[index % icons.length]
-}
 
 function openCreateDialog() {
   newConversationTitle.value = ''
@@ -2050,7 +2123,7 @@ async function handleSelectConversation(id: string) {
   chatStore.setCurrentConversation(id)
   await chatStore.loadTimeline(id)
   await applyWorkspaceDirectory(getEffectiveWorkspaceDirectory(id))
-  generatingImage.value = false
+
   if (pendingToolApproval.value?.conversationId !== id) {
     pendingToolApproval.value = null
     resolvingToolApproval.value = false
@@ -2059,7 +2132,7 @@ async function handleSelectConversation(id: string) {
 }
 
 function isConversationPinned(id: string) {
-  return pinnedConversationIds.value.includes(id)
+  return pinnedConversationIdSet.value.has(id)
 }
 
 function togglePinnedConversation(id: string) {
@@ -2141,7 +2214,7 @@ async function handleDeleteConversation(id: string) {
       chatStore.setCurrentConversation(null)
       await applyWorkspaceDirectory(getDefaultWorkspaceDirectory())
       pausingStream.value = false
-      generatingImage.value = false
+
       pendingToolApproval.value = null
       resolvingToolApproval.value = false
       createDialogVisible.value = true
@@ -2249,27 +2322,7 @@ async function pauseStream() {
   }
 }
 
-async function generateImage() {
-  const prompt = getComposerText().trim()
-  const conversationId = chatStore.currentConversationId
-  if (!prompt || !conversationId || isCurrentConversationStreaming.value || generatingImage.value) return
 
-  generatingImage.value = true
-  setComposerText('')
-
-  try {
-    await invoke('generate_image', {
-      conversationId,
-      prompt
-    })
-    await chatStore.loadTimeline(conversationId)
-  } catch (error) {
-    setComposerText(prompt)
-    ElMessage.error(getErrorMessage(error, '文生图失败'))
-  } finally {
-    generatingImage.value = false
-  }
-}
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (typeof error === 'string' && error.trim().length > 0) return error
@@ -2370,7 +2423,3 @@ function getPathName(input: string) {
 </script>
 
 <style scoped src="./styles/app-shell.css"></style>
-
-
-
-
