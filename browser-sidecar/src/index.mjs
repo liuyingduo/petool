@@ -98,6 +98,16 @@ function profileUserDataDir(paths, profile) {
   return path.join(paths.profiles_root, profile, 'user-data')
 }
 
+function resolveProfileStorageKey(executablePath, preferChromium) {
+  const executableName = typeof executablePath === 'string'
+    ? path.basename(executablePath).toLowerCase()
+    : ''
+  if (executableName.includes('msedge')) return 'edge'
+  if (executableName.includes('chrome')) return 'chrome'
+  if (executableName.includes('chromium')) return 'chromium'
+  return preferChromium ? 'chromium' : 'chrome'
+}
+
 function defaultViewport(profileConfig) {
   const viewport = profileConfig?.viewport || {}
   return {
@@ -386,16 +396,70 @@ async function attachBrowserViaCdp(cdpUrl, browserConfig, state, launchedProcess
 }
 
 async function launchExternalChromeViaCdp(profileName, profileConfig, browserConfig, state, paths) {
-  const executablePath = typeof profileConfig?.executable_path === 'string'
+  let executablePath = typeof profileConfig?.executable_path === 'string'
     ? profileConfig.executable_path.trim()
     : ''
+  const normalizedEngine = typeof profileConfig?.engine === 'string'
+    ? profileConfig.engine.trim().toLowerCase()
+    : 'chrome'
+  const preferChromium = normalizedEngine === 'chromium'
+
   if (!executablePath) {
+    if (process.platform === 'win32') {
+      const chromePaths = [
+        path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['LOCALAPPDATA'] || 'C:\\Users\\Default\\AppData\\Local', 'Google', 'Chrome', 'Application', 'chrome.exe')
+      ]
+      const edgePaths = [
+        path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+      ]
+      // On Windows, always prefer Edge when available, regardless of configured engine.
+      const candidates = [...edgePaths, ...chromePaths]
+      for (const candidate of candidates) {
+        try {
+          await fs.access(candidate)
+          executablePath = candidate
+          break
+        } catch { }
+      }
+    } else if (process.platform === 'darwin') {
+      const candidates = preferChromium
+        ? []
+        : [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+        ]
+      for (const candidate of candidates) {
+        try {
+          await fs.access(candidate)
+          executablePath = candidate
+          break
+        } catch { }
+      }
+    } else if (process.platform === 'linux') {
+      const candidates = preferChromium
+        ? ['/usr/bin/chromium', '/usr/bin/chromium-browser']
+        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge', '/usr/bin/msedge']
+      for (const candidate of candidates) {
+        try {
+          await fs.access(candidate)
+          executablePath = candidate
+          break
+        } catch { }
+      }
+    }
+  }
+
+  if (!executablePath && !preferChromium) {
     throw new Error(`Profile "${profileName}" requires executable_path for launch mode`)
   }
 
+  const storageKey = resolveProfileStorageKey(executablePath, preferChromium)
   const userDataDir = (typeof profileConfig?.user_data_dir === 'string' && profileConfig.user_data_dir.trim())
     ? profileConfig.user_data_dir.trim()
-    : profileUserDataDir(paths, profileName)
+    : path.join(profileUserDataDir(paths, profileName), storageKey)
   await ensureDir(userDataDir)
 
   const viewport = defaultViewport(profileConfig)
@@ -407,12 +471,16 @@ async function launchExternalChromeViaCdp(profileName, profileConfig, browserCon
   ]
 
   try {
-    const context = await chromium.launchPersistentContext(userDataDir, {
-      executablePath,
+    const launchOptions = {
       headless: Boolean(profileConfig?.headless),
       viewport,
       args: launchArgs
-    })
+    }
+    if (executablePath) {
+      launchOptions.executablePath = executablePath
+    }
+
+    const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
     const browser = context.browser() || null
     await bindContextToState(browserConfig, state, context, {
       browser,
@@ -421,7 +489,8 @@ async function launchExternalChromeViaCdp(profileName, profileConfig, browserCon
       launchedCdpUrl: null
     })
   } catch (error) {
-    throw new Error(`Failed to launch browser (${executablePath}): ${makeErrorMessage(error)}`)
+    const target = executablePath || (preferChromium ? 'chromium' : 'browser')
+    throw new Error(`Failed to launch browser (${target}): ${makeErrorMessage(error)}`)
   }
 }
 
@@ -573,12 +642,6 @@ async function ensureContext(profileName, profileConfig, browserConfig, paths) {
     if (cdpUrl) {
       await attachExistingBrowserViaCdp(profileConfig, browserConfig, state)
     } else {
-      const executablePath = typeof profileConfig?.executable_path === 'string'
-        ? profileConfig.executable_path.trim()
-        : ''
-      if (!executablePath) {
-        throw new Error('Profile must set executable_path for external Chrome launch, or set cdp_url to attach an existing debug Chrome')
-      }
       await launchExternalChromeViaCdp(profileName, profileConfig, browserConfig, state, paths)
     }
     return state
