@@ -862,7 +862,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Snapshot returns compact text in data.refs_text (format: [eN] role \"name\" [x,y,w,h]); parse refs like [e7] and use that ref in act. Canvas/game UIs often require click coordinates: use action=act with {kind:\"click\", x, y}. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
             .to_string(),
         json!({
             "type": "object",
@@ -875,7 +875,7 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
                 "target_id": { "type": "string" },
                 "params": {
                     "type": "object",
-                    "description": "Action-specific parameters. For action=act, use {kind, ref|selector, ...}. For action=act_batch, use {actions:[{kind, ref|selector, ...}, ...], stop_on_error?}. Valid act kinds include: click|type|press|hover|scroll|select|wait|drag. Example: {\"action\":\"act_batch\",\"params\":{\"actions\":[{\"kind\":\"type\",\"ref\":\"e7\",\"text\":\"李佳琦\"},{\"kind\":\"click\",\"ref\":\"e8\"}]}}. Do not use actions[].action."
+                    "description": "Action-specific parameters. For action=snapshot, response data uses refs_text (compact lines like [e7] textbox \"Search\" [120,340,260,36]) instead of refs array. For action=act, use {kind, ref|selector, ...}; click also supports direct coordinates {kind:\"click\", x, y} for canvas/game UIs. For action=act_batch, use {actions:[{kind, ref|selector, ...}, ...], stop_on_error?}. Valid act kinds include: click|type|press|hover|scroll|select|wait|drag. Example: {\"action\":\"act_batch\",\"params\":{\"actions\":[{\"kind\":\"type\",\"ref\":\"e7\",\"text\":\"query\"},{\"kind\":\"click\",\"ref\":\"e8\"}]}}. Do not use actions[].action."
                 }
             },
             "required": ["action"]
@@ -957,9 +957,9 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
                 "prompt": { "type": "string", "description": "Question or instruction for the image." },
                 "path": { "type": "string", "description": "Workspace-relative or absolute path inside workspace root." },
                 "url": { "type": "string", "description": "Public http/https URL or data:image/... URL." },
-                "model": { "type": "string", "description": "Vision model name. Default glm-4.6v." },
+                "model": { "type": "string", "description": "Vision model name. Default uses config.image_understand_model (fallback glm-4.6v)." },
                 "thinking": { "type": "boolean", "description": "Enable model thinking mode when supported." },
-                "max_bytes": { "type": "integer", "description": "Max local image bytes. Default 4MB, max 8MB." }
+                "max_bytes": { "type": "integer", "description": "Optional max local image bytes. Omit or set 0 for no limit." }
             },
             "required": ["prompt"]
         }),

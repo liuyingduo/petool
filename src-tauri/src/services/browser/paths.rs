@@ -166,22 +166,17 @@ fn candidate_sidecar_entries() -> Vec<PathBuf> {
     candidates
 }
 
-fn env_truthy(name: &str) -> bool {
-    env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn prefer_src_sidecar_in_dev() -> bool {
     if !cfg!(debug_assertions) {
         return false;
     }
-    env_truthy("PETOOL_BROWSER_DEV_USE_SRC_SIDECAR")
+    match env::var("PETOOL_BROWSER_DEV_USE_SRC_SIDECAR") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => true,
+    }
 }
 
 pub fn resolve_sidecar_entry() -> Result<PathBuf> {

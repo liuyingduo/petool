@@ -217,8 +217,16 @@ pub(super) async fn execute_image_understand(
     let model = read_optional_string_argument(arguments, "model")
         .unwrap_or_else(|| default_model.to_string());
     let enable_thinking = read_bool_argument(arguments, "thinking", false);
-    let max_bytes =
-        read_u64_argument(arguments, "max_bytes", 4 * 1024 * 1024).clamp(8_192, 8_388_608) as usize;
+    let max_bytes = arguments
+        .get("max_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|value| {
+            if value == 0 {
+                None
+            } else {
+                Some(value as usize)
+            }
+        });
 
     let path = read_optional_string_argument(arguments, "path");
     let url = read_optional_string_argument(arguments, "url");
@@ -233,12 +241,14 @@ pub(super) async fn execute_image_understand(
         if !file_metadata.is_file() {
             return Err(format!("Not a file: {}", resolved.display()));
         }
-        if file_metadata.len() as usize > max_bytes {
-            return Err(format!(
-                "Image exceeds max_bytes ({} > {})",
-                file_metadata.len(),
-                max_bytes
-            ));
+        if let Some(limit) = max_bytes {
+            if file_metadata.len() as usize > limit {
+                return Err(format!(
+                    "Image exceeds max_bytes ({} > {})",
+                    file_metadata.len(),
+                    limit
+                ));
+            }
         }
 
         let bytes = fs::read(&resolved).map_err(|e| e.to_string())?;

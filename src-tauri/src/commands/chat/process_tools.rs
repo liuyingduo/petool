@@ -95,8 +95,12 @@ pub(super) async fn execute_workspace_process_start(
     }
 
     let mut cmd = if cfg!(target_os = "windows") {
+        let wrapped_command = format!(
+            "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null; {}",
+            command
+        );
         let mut process = Command::new("powershell");
-        process.args(["-NoProfile", "-Command", &command]);
+        process.args(["-NoProfile", "-NonInteractive", "-Command", &wrapped_command]);
         process
     } else {
         let mut process = Command::new("sh");

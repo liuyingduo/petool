@@ -162,6 +162,8 @@ Always discover controls before acting: get_desktop_app_info/list_windows -> sel
 Use canonical action args: set_edit_text(text), keyboard_input(keys, control_focus), wheel_mouse_input(wheel_dist), select_application_window(id,name). \
 Browser policy: all browser lifecycle/navigation/page actions must use tool=browser only; never use desktop.launch_application or desktop.close_application for browsers. \
 For browser action=act or action=act_batch, action items must use field `kind` (not `action`). \
+For browser action=snapshot, parse refs from data.refs_text lines like [e7] textbox \"Search\" [120,340,260,36], then pass ref=e7 into act/act_batch. \
+For canvas/game UIs where refs are unavailable, use browser action=act with {kind:\"click\", x, y}; do not send text-only click params. \
 Use click_on_coordinates only as fallback when the target control is missing from control list."
     } else {
         "Tool selection policy: \

@@ -743,19 +743,31 @@ function uniqueStrings(values) {
   return result
 }
 
-function compactSnapshotEntry(row) {
-  return {
-    ref: row.ref,
-    role: row.role || row.tag || 'element',
-    tag: row.tag || null,
-    type: row.type || null,
-    name: row.name || '',
-    text: row.text || '',
-    selector: row.selector,
-    bbox: row.bbox || null,
-    in_viewport: Boolean(row.in_viewport),
-    disabled: Boolean(row.disabled)
+function escapeSnapshotValue(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+}
+
+function renderSnapshotLine(row) {
+  const ref = typeof row?.ref === 'string' ? row.ref : 'e0'
+  const role = typeof row?.role === 'string' && row.role.trim()
+    ? row.role.trim()
+    : (typeof row?.tag === 'string' && row.tag.trim() ? row.tag.trim() : 'element')
+  const nameOrText = typeof row?.name === 'string' && row.name.trim()
+    ? row.name.trim()
+    : (typeof row?.text === 'string' ? row.text.trim() : '')
+  const bbox = Array.isArray(row?.bbox) && row.bbox.length >= 4
+    ? row.bbox.slice(0, 4).map((value) => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? Math.round(parsed) : 0
+    })
+    : null
+  const quoted = `"${escapeSnapshotValue(nameOrText)}"`
+  if (bbox) {
+    return `[${ref}] ${role} ${quoted} [${bbox.join(',')}]`
   }
+  return `[${ref}] ${role} ${quoted}`
 }
 
 function resolveRefEntry(state, targetId, ref) {
@@ -895,15 +907,20 @@ async function robustClick(page, selectors, refEntry, params, strategyConfig, ti
     }
   }
 
-  if (params.allow_coordinate_fallback === true && refEntry?.bbox && Number.isFinite(refEntry.bbox.y)) {
+  const bbox = Array.isArray(refEntry?.bbox) ? refEntry.bbox : null
+  if (params.allow_coordinate_fallback === true && bbox && bbox.length >= 4 && Number.isFinite(Number(bbox[1]))) {
     try {
+      const xValue = Number(bbox[0])
+      const yValue = Number(bbox[1])
+      const widthValue = Number(bbox[2])
+      const heightValue = Number(bbox[3])
       await timeAction(timing, () => page.evaluate((y) => {
         const target = Math.max(0, Number(y) - window.innerHeight * 0.35)
         window.scrollTo({ top: target, behavior: 'auto' })
-      }, refEntry.bbox.y))
+      }, yValue))
       const viewport = await timeAction(timing, () => page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight })))
-      const rawX = Number(refEntry.bbox.cx ?? (refEntry.bbox.x + refEntry.bbox.width / 2))
-      const rawY = Number(refEntry.bbox.cy ?? (refEntry.bbox.y + refEntry.bbox.height / 2))
+      const rawX = xValue + Math.max(0, widthValue) / 2
+      const rawY = yValue + Math.max(0, heightValue) / 2
       const x = Math.max(1, Math.min(Math.max(1, viewport.w - 1), rawX))
       const y = Math.max(1, Math.min(Math.max(1, viewport.h - 1), rawY))
       await timeAction(timing, () => page.mouse.click(x, y, {
@@ -1341,6 +1358,17 @@ async function buildSnapshot(state, request) {
       return true
     }
 
+    function resolveAssociatedLabel(el) {
+      try {
+        const labels = el.labels
+        if (!labels || labels.length === 0) return ''
+        const firstLabel = labels[0]
+        return normalizeText(firstLabel?.innerText || firstLabel?.textContent || '', 120)
+      } catch {
+        return ''
+      }
+    }
+
     document.querySelectorAll(`[${markerAttr}]`).forEach((node) => node.removeAttribute(markerAttr))
 
     const rawCandidates = Array.from(
@@ -1367,20 +1395,10 @@ async function buildSnapshot(state, request) {
       const placeholder = normalizeText(el.getAttribute('placeholder') || '', 80)
       const ariaLabel = normalizeText(el.getAttribute('aria-label') || '', 120)
       const title = normalizeText(el.getAttribute('title') || '', 120)
-      let label = ariaLabel || placeholder || title
-      if (!label && tag === 'input') {
-        try {
-          const firstLabel = el.labels && el.labels.length > 0 ? el.labels[0] : null
-          if (firstLabel) {
-            label = normalizeText(firstLabel.innerText || firstLabel.textContent || '', 120)
-          }
-        } catch {
-          // ignore label resolution failures
-        }
-      }
-      if (!label) {
-        label = text
-      }
+      const alt = normalizeText(el.getAttribute('alt') || '', 120)
+      const labelText = resolveAssociatedLabel(el)
+      if (!text && !ariaLabel && !title && !alt && !placeholder && !labelText) continue
+      const label = ariaLabel || placeholder || title || alt || labelText || text
       const inViewport = rect.left < window.innerWidth &&
         rect.right > 0 &&
         rect.top < window.innerHeight &&
@@ -1437,14 +1455,12 @@ async function buildSnapshot(state, request) {
         placeholder,
         in_viewport: inViewport,
         disabled,
-        bbox: {
-          x: Number(rect.left.toFixed(1)),
-          y: Number(rect.top.toFixed(1)),
-          width: Number(rect.width.toFixed(1)),
-          height: Number(rect.height.toFixed(1)),
-          cx: Number((rect.left + rect.width / 2).toFixed(1)),
-          cy: Number((rect.top + rect.height / 2).toFixed(1))
-        },
+        bbox: [
+          Math.round(rect.left),
+          Math.round(rect.top),
+          Math.round(rect.width),
+          Math.round(rect.height)
+        ],
         fallback_selectors: fallbackSelectors
       })
     }
@@ -1452,8 +1468,8 @@ async function buildSnapshot(state, request) {
     entries.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score
       if (a.in_viewport !== b.in_viewport) return a.in_viewport ? -1 : 1
-      if (a.bbox.y !== b.bbox.y) return a.bbox.y - b.bbox.y
-      return a.bbox.x - b.bbox.x
+      if (a.bbox[1] !== b.bbox[1]) return a.bbox[1] - b.bbox[1]
+      return a.bbox[0] - b.bbox[0]
     })
 
     const selected = entries.slice(0, maxRefs)
@@ -1468,12 +1484,9 @@ async function buildSnapshot(state, request) {
         type: entry.type,
         name: entry.name,
         text: entry.text,
-        placeholder: entry.placeholder,
         selector,
         fallback_selectors: Array.from(new Set([selector, ...entry.fallback_selectors])).slice(0, 6),
-        bbox: entry.bbox,
-        in_viewport: entry.in_viewport,
-        disabled: entry.disabled
+        bbox: entry.bbox
       }
     })
 
@@ -1491,12 +1504,14 @@ async function buildSnapshot(state, request) {
   const refs = snapshotResult.rows || []
   const refMap = new Map(refs.map((row) => [row.ref, row]))
   state.refsByTarget.set(targetId, refMap)
+  const refsText = refs.map(renderSnapshotLine).join('\n')
 
   return {
     target_id: targetId,
     url: page.url(),
     title: await page.title().catch(() => ''),
-    refs: refs.map(compactSnapshotEntry),
+    refs_text: refsText,
+    refs_format: 'compact_text_v1',
     stats: {
       mode,
       count: refs.length,
@@ -1559,7 +1574,34 @@ async function executeAct(state, request, browserConfig, options = {}) {
 
   switch (kind) {
     case 'click': {
-      if (selectorCandidates.length === 0) throw new Error('act.click requires ref or selector')
+      const xRaw = Number(params.x)
+      const yRaw = Number(params.y)
+      const hasCoordinates = Number.isFinite(xRaw) && Number.isFinite(yRaw)
+      if (selectorCandidates.length === 0 && !hasCoordinates) {
+        throw new Error('act.click requires ref or selector, or numeric x/y coordinates')
+      }
+      if (selectorCandidates.length === 0 && hasCoordinates) {
+        const actionStarted = Date.now()
+        const viewport = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+        const x = Math.max(1, Math.min(Math.max(1, viewport.w - 1), xRaw))
+        const y = Math.max(1, Math.min(Math.max(1, viewport.h - 1), yRaw))
+        await page.mouse.click(x, y, {
+          button: typeof params.button === 'string' ? params.button : 'left',
+          clickCount: params.double ? 2 : 1
+        })
+        perf.action_ms += Date.now() - actionStarted
+        perf.duration_ms = Date.now() - started
+        return {
+          ok: true,
+          action: 'click',
+          target_id: targetId,
+          selector: null,
+          method: 'coordinates_direct',
+          coordinates: { x, y },
+          strategy,
+          __perf: perf
+        }
+      }
       const timing = { locate_ms: 0, action_ms: 0 }
       const detail = await robustClick(page, selectorCandidates, refEntry, paramsWithResolvedTimeout, strategyConfig, timing)
       perf.locate_ms += timing.locate_ms

@@ -439,8 +439,12 @@ pub(crate) async fn execute_workspace_run_command(
     let timeout_ms = read_u64_argument(arguments, "timeout_ms", 20_000).clamp(1_000, 120_000);
 
     let mut cmd = if cfg!(target_os = "windows") {
+        let wrapped_command = format!(
+            "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null; {}",
+            command
+        );
         let mut process = TokioCommand::new("powershell");
-        process.args(["-NoProfile", "-Command", &command]);
+        process.args(["-NoProfile", "-NonInteractive", "-Command", &wrapped_command]);
         process
     } else {
         let mut process = TokioCommand::new("sh");
@@ -1634,7 +1638,14 @@ pub(crate) async fn execute_core_batch_safe_tool(
     skill_manager_state: &SkillManagerState,
     pool: &SqlitePool,
     llm_service: &LlmService,
+    image_default_model: &str,
 ) -> Result<Value, String> {
+    let resolved_image_model = if image_default_model.trim().is_empty() {
+        "glm-4.6v"
+    } else {
+        image_default_model
+    };
+
     match tool_name {
         WORKSPACE_LIST_TOOL => execute_workspace_list_directory(arguments, workspace_root),
         WORKSPACE_READ_TOOL => execute_workspace_read_file(arguments, workspace_root),
@@ -1651,7 +1662,13 @@ pub(crate) async fn execute_core_batch_safe_tool(
         BROWSER_NAVIGATE_TOOL => execute_browser_navigate(arguments).await,
         IMAGE_PROBE_TOOL => execute_image_probe(arguments, workspace_root).await,
         IMAGE_UNDERSTAND_TOOL => {
-            execute_image_understand(arguments, workspace_root, llm_service, "glm-4.6v").await
+            execute_image_understand(
+                arguments,
+                workspace_root,
+                llm_service,
+                resolved_image_model,
+            )
+            .await
         }
         SESSIONS_LIST_TOOL => execute_sessions_list(arguments, pool).await,
         SESSIONS_HISTORY_TOOL => execute_sessions_history(arguments, pool).await,
@@ -1669,6 +1686,7 @@ pub(crate) async fn execute_core_batch(
     skill_manager_state: &SkillManagerState,
     pool: &SqlitePool,
     llm_service: &LlmService,
+    image_default_model: &str,
 ) -> Result<Value, String> {
     let calls = arguments
         .get("tool_calls")
@@ -1706,6 +1724,7 @@ pub(crate) async fn execute_core_batch(
             skill_manager_state,
             pool,
             llm_service,
+            image_default_model,
         )
         .await
         {
@@ -1823,6 +1842,7 @@ pub(crate) async fn execute_runtime_tool_non_scheduler(
                 skill_manager_state,
                 pool,
                 llm_service,
+                &config.image_understand_model,
             )
             .await
         }
@@ -1836,7 +1856,13 @@ pub(crate) async fn execute_runtime_tool_non_scheduler(
         RuntimeTool::Desktop => execute_desktop(arguments, conversation_id, config).await,
         RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
         RuntimeTool::ImageUnderstand => {
-            execute_image_understand(arguments, workspace_root, llm_service, default_model).await
+            let image_default_model = if config.image_understand_model.trim().is_empty() {
+                "glm-4.6v"
+            } else {
+                config.image_understand_model.as_str()
+            };
+            execute_image_understand(arguments, workspace_root, llm_service, image_default_model)
+                .await
         }
         RuntimeTool::SessionsList => execute_sessions_list(arguments, pool).await,
         RuntimeTool::SessionsHistory => execute_sessions_history(arguments, pool).await,
