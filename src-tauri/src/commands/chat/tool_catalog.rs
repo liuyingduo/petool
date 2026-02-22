@@ -869,7 +869,10 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/extract/find_elements/get_dropdown_options/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Snapshot returns compact text in data.refs_text (format: [eN] role \"name\" [x,y,w,h]); parse refs like [e7] and use that ref in act. WARNING: action=snapshot ONLY reads the page state, it DOES NOT click or interact! To actually click or type, you MUST carefully use action=act or action=act_batch. Canvas/game UIs often require click coordinates: use action=act with {kind:\"click\", x, y}. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/extract/find_elements/get_dropdown_options/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). \
+         CRITICAL USAGE FOR READING CONTENT: If you need to read page text, extract data lists (news, prices), or understand page content, YOU MUST USE action=extract OR action=evaluate. \
+         CRITICAL USAGE FOR INTERACTION: Use action=snapshot ONLY when you need to find coordinates/refs to CLICK or TYPE. Snapshot returns compact text (format: [eN] role \"name\" [x,y,w,h]) that EXCLUDES long text blocks to save tokens. \
+         For fast interactions: snapshot after navigation, then act_batch. To actually click, use action=act or act_batch with params.kind."
             .to_string(),
         json!({
             "type": "object",

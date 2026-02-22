@@ -111,7 +111,7 @@ impl BrowserManager {
             .call(
                 "browser.action",
                 serde_json::to_value(payload)?,
-                Duration::from_millis(timeout_ms),
+                Duration::from_millis(timeout_ms + 15_000), // add IPC buffer to prevent premature rust timeout
             )
             .await?;
 
