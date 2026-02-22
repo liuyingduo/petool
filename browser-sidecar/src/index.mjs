@@ -764,10 +764,16 @@ function renderSnapshotLine(row) {
     })
     : null
   const quoted = `"${escapeSnapshotValue(nameOrText)}"`
+
+  let domMeta = (row?.tag || '').toLowerCase()
+  if (row?.id) domMeta += `#${row.id}`
+  if (row?.className) domMeta += `.${row.className.trim().split(/\s+/).join('.')}`
+  const metaStr = domMeta ? ` <${domMeta}>` : ''
+
   if (bbox) {
-    return `[${ref}] ${role} ${quoted} [${bbox.join(',')}]`
+    return `[${ref}] ${role} ${quoted} [${bbox.join(',')}]${metaStr}`
   }
-  return `[${ref}] ${role} ${quoted}`
+  return `[${ref}] ${role} ${quoted}${metaStr}`
 }
 
 function resolveRefEntry(state, targetId, ref) {
@@ -1342,7 +1348,12 @@ async function buildSnapshot(state, request) {
         'textarea',
         'select',
         'summary',
-        'option'
+        'option',
+        'canvas',
+        'iframe',
+        'video',
+        'audio',
+        'svg'
       ]).has(tag)
     }
 
@@ -1371,15 +1382,48 @@ async function buildSnapshot(state, request) {
 
     document.querySelectorAll(`[${markerAttr}]`).forEach((node) => node.removeAttribute(markerAttr))
 
-    const rawCandidates = Array.from(
-      document.querySelectorAll(
-        'a,button,input,textarea,select,summary,label,[role],[tabindex],[onclick],[aria-label],[data-testid],[contenteditable=""],[contenteditable="true"]'
-      )
-    ).slice(0, candidateLimit)
+    const baseSel = 'a,button,input,textarea,select,summary,label,canvas,iframe,video,audio,svg,[role],[tabindex],[onclick],[aria-label],[data-testid],[contenteditable=""],[contenteditable="true"]';
+    const rawCandidates = [];
+    const allNodes = document.querySelectorAll('*');
+
+    for (let i = 0; i < allNodes.length; i++) {
+      if (rawCandidates.length >= candidateLimit) break;
+      const el = allNodes[i];
+      if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) continue;
+
+      if (el.matches(baseSel)) {
+        rawCandidates.push(el);
+        continue;
+      }
+
+      let hasFramework = false;
+      const keys = Object.keys(el);
+      for (let j = 0; j < keys.length; j++) {
+        const k = keys[j];
+        if (k.startsWith('__react') || k.startsWith('__vue')) {
+          const p = el[k];
+          if (p && (typeof p.onClick === 'function' || typeof p.onMouseDown === 'function' || typeof p.onPointerUp === 'function' || typeof p.onPointerDown === 'function')) {
+            hasFramework = true;
+            break;
+          }
+        }
+      }
+      if (hasFramework) {
+        rawCandidates.push(el);
+        continue;
+      }
+
+      const tag = el.tagName.toLowerCase();
+      if (['div', 'span', 'p', 'li', 'td', 'th', 'img', 'i', 'b', 'strong'].includes(tag)) {
+        if (window.getComputedStyle(el).cursor === 'pointer') {
+          rawCandidates.push(el);
+        }
+      }
+    }
 
     const entries = []
     for (const el of rawCandidates) {
-      if (!(el instanceof HTMLElement)) continue
+      if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) continue
       const tag = el.tagName.toLowerCase()
       const type = tag === 'input'
         ? String(el.getAttribute('type') || 'text').toLowerCase()
@@ -1397,7 +1441,8 @@ async function buildSnapshot(state, request) {
       const title = normalizeText(el.getAttribute('title') || '', 120)
       const alt = normalizeText(el.getAttribute('alt') || '', 120)
       const labelText = resolveAssociatedLabel(el)
-      if (!text && !ariaLabel && !title && !alt && !placeholder && !labelText) continue
+      const isMediaOrFrame = tag === 'canvas' || tag === 'iframe' || tag === 'video' || tag === 'audio' || tag === 'svg'
+      if (!isMediaOrFrame && !text && !ariaLabel && !title && !alt && !placeholder && !labelText) continue
       const label = ariaLabel || placeholder || title || alt || labelText || text
       const inViewport = rect.left < window.innerWidth &&
         rect.right > 0 &&
@@ -1408,8 +1453,20 @@ async function buildSnapshot(state, request) {
         el.hasAttribute('tabindex') ||
         el.getAttribute('contenteditable') === 'true' ||
         el.getAttribute('contenteditable') === ''
-      const hasPointerCursor = style.cursor === 'pointer'
-      const interactive = isInteractiveTag(tag) || isInteractiveRole(role) || hasInteractiveAttr || hasPointerCursor
+
+      let hasPointerCursor = style.cursor === 'pointer'
+      if (!hasPointerCursor) {
+        let parent = el.parentElement;
+        for (let j = 0; j < 3 && parent; j++) {
+          if (window.getComputedStyle(parent).cursor === 'pointer') {
+            hasPointerCursor = true;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+
+      const interactive = isInteractiveTag(tag) || isInteractiveRole(role) || hasInteractiveAttr || hasPointerCursor || rawCandidates.includes(el)
       if (!interactive) continue
 
       const fallbackSelectors = []
@@ -1449,6 +1506,8 @@ async function buildSnapshot(state, request) {
         score,
         role,
         tag,
+        id: el.id || '',
+        className: typeof el.className === 'string' ? el.className.trim() : '',
         type,
         text,
         name: label,
@@ -1481,6 +1540,8 @@ async function buildSnapshot(state, request) {
         ref,
         role: entry.role,
         tag: entry.tag,
+        id: entry.id,
+        className: entry.className,
         type: entry.type,
         name: entry.name,
         text: entry.text,
@@ -1636,14 +1697,81 @@ async function executeAct(state, request, browserConfig, options = {}) {
         __perf: perf
       }
     }
-    case 'press':
-      {
-        const actionStarted = Date.now()
-        await page.keyboard.press(String(params.key || 'Enter'))
-        perf.action_ms += Date.now() - actionStarted
+    case 'press': {
+      const actionStarted = Date.now()
+      const rawKey = String(params.key || 'Enter')
+      // normalize common shorthands: " " -> "Space"
+      const keyName = rawKey === ' ' ? 'Space' : rawKey
+      // Map Playwright key names to DOM key values
+      const keyValueMap = {
+        Space: ' ', Enter: 'Enter', Escape: 'Escape', Tab: 'Tab',
+        ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
+        Backspace: 'Backspace', Delete: 'Delete', Home: 'Home', End: 'End',
+        PageUp: 'PageUp', PageDown: 'PageDown', F1: 'F1', F2: 'F2', F3: 'F3',
+        F4: 'F4', F5: 'F5', F6: 'F6', F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10'
       }
+      const domKeyValue = keyValueMap[keyName] || keyName
+      const domKeyCode = keyName === 'Space' ? 32
+        : keyName === 'Enter' ? 13
+          : keyName === 'Escape' ? 27
+            : keyName === 'ArrowLeft' ? 37
+              : keyName === 'ArrowUp' ? 38
+                : keyName === 'ArrowRight' ? 39
+                  : keyName === 'ArrowDown' ? 40
+                    : keyName === 'Tab' ? 9
+                      : keyName === 'Backspace' ? 8
+                        : keyName.length === 1 ? keyName.charCodeAt(0)
+                          : 0
+
+      // Try to dispatch into the active frame (including inside iframes)
+      const dispatched = await page.evaluate(({ keyName: key, keyValue, keyCode }) => {
+        function dispatchKey(doc, win) {
+          const evtInit = {
+            key: keyValue,
+            code: key === 'Space' ? 'Space' : key,
+            keyCode,
+            which: keyCode,
+            bubbles: true,
+            cancelable: true
+          }
+          const kd = new KeyboardEvent('keydown', evtInit)
+          const kp = new KeyboardEvent('keypress', evtInit)
+          const ku = new KeyboardEvent('keyup', evtInit)
+          const target = doc.activeElement || doc.body
+          target.dispatchEvent(kd)
+          target.dispatchEvent(kp)
+          target.dispatchEvent(ku)
+          return true
+        }
+        try {
+          const active = document.activeElement
+          if (active && active.tagName && active.tagName.toLowerCase() === 'iframe') {
+            try {
+              const innerDoc = active.contentDocument || active.contentWindow?.document
+              if (innerDoc) {
+                dispatchKey(innerDoc, active.contentWindow)
+                return true
+              }
+            } catch {
+              // cross-origin iframe, fall through to top-level
+            }
+          }
+          dispatchKey(document, window)
+          return true
+        } catch {
+          return false
+        }
+      }, { keyName, keyValue: domKeyValue, keyCode: domKeyCode })
+
+      if (!dispatched) {
+        // fallback to Playwright keyboard API (for top-level pages)
+        await page.keyboard.press(keyName)
+      }
+      perf.action_ms += Date.now() - actionStarted
       perf.duration_ms = Date.now() - started
       return { ok: true, action: 'press', target_id: targetId, strategy, __perf: perf }
+    }
+
     case 'hover':
       if (selectorCandidates.length === 0) throw new Error('act.hover requires ref or selector')
       {
@@ -1969,6 +2097,103 @@ async function handleAction(params) {
 
   if (action === 'snapshot') {
     return await buildSnapshot(state, request)
+  }
+
+  if (action === 'extract') {
+    const { page, targetId } = resolvePage(state, request)
+    const selector = request.params?.selector || 'body'
+    const fields = request.params?.fields || {}
+    const maxResults = request.params?.max_results || 50
+    const extractFn = ([sel, flds, max]) => {
+      let scope;
+      try { scope = document.querySelectorAll(sel) } catch (e) { return { error: `Invalid selector: ${e.message}` } }
+      const results = []
+      for (let i = 0; i < Math.min(scope.length, max); i++) {
+        const el = scope[i]
+        const item = {}
+        for (const [key, path] of Object.entries(flds)) {
+          if (!path || typeof path !== 'string') {
+            item[key] = null; continue
+          }
+          let target = el
+          let attr = null
+          const parts = path.split('@')
+          const subSel = parts[0]
+          if (parts.length > 1) attr = parts[1]
+          if (subSel) {
+            try { target = el.querySelector(subSel) } catch (e) { target = null }
+          }
+          if (target) {
+            if (attr) item[key] = target.getAttribute(attr) || ''
+            else item[key] = (target.innerText || target.textContent || '').trim()
+          } else {
+            item[key] = null
+          }
+        }
+        results.push(item)
+      }
+      return { items: results, count: results.length }
+    }
+    const data = await page.evaluate(extractFn, [selector, fields, maxResults]).catch(e => ({ error: e.message }))
+    return { target_id: targetId, ...data }
+  }
+
+  if (action === 'find_elements') {
+    const { page, targetId } = resolvePage(state, request)
+    const selector = request.params?.selector || '*'
+    const attributes = request.params?.attributes || []
+    const maxResults = request.params?.max_results || 50
+    const includeText = request.params?.include_text !== false
+    const fn = ([sel, attrs, max, textInc]) => {
+      let elements;
+      try { elements = document.querySelectorAll(sel); } catch (e) { return { error: e.message, elements: [] } }
+      const limit = Math.min(elements.length, max);
+      const results = [];
+      for (let i = 0; i < limit; i++) {
+        const el = elements[i];
+        let item = { index: i, tag: el.tagName.toLowerCase() };
+        if (textInc) {
+          const text = (el.textContent || '').trim();
+          item.text = text.length > 300 ? text.slice(0, 300) + '...' : text;
+        }
+        if (attrs && attrs.length > 0) {
+          item.attrs = {};
+          attrs.forEach(attr => {
+            const val = el.getAttribute(attr);
+            if (val !== null) item.attrs[attr] = val.length > 500 ? val.slice(0, 500) + '...' : val;
+          });
+        }
+        const rect = el.getBoundingClientRect();
+        item.rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        item.children_count = el.children.length;
+        results.push(item);
+      }
+      return { elements: results, total: elements.length, showing: limit };
+    }
+    const result = await page.evaluate(fn, [selector, attributes, maxResults, includeText]).catch(e => ({ error: e.message }))
+    return { target_id: targetId, ...result }
+  }
+
+  if (action === 'get_dropdown_options') {
+    const { page, targetId } = resolvePage(state, request)
+    const ref = request.params?.ref
+    if (!ref) throw new Error('get_dropdown_options requires params.ref')
+    const selector = resolveSelectorFromRef(state, targetId, ref)
+    if (!selector) throw new Error(`Ref ${ref} not found on target ${targetId}`)
+    const locator = page.locator(selector).first()
+    const result = await locator.evaluate(element => {
+      if (element.tagName.toLowerCase() !== 'select') return { error: `Element is <${element.tagName.toLowerCase()}>, not a <select>` }
+      const options = Array.from(element.querySelectorAll('option'));
+      return {
+        options: options.map((o, i) => ({
+          index: i,
+          text: (o.textContent || '').trim(),
+          value: o.getAttribute('value') || '',
+          selected: o.selected
+        }))
+      }
+    }).catch(e => ({ error: e.message }))
+    return { target_id: targetId, ref, ...result }
   }
 
   if (action === 'screenshot') {

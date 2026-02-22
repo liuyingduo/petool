@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import connect_db, close_db
-from routers import auth, account, proxy, payment
+from routers import auth, account, proxy, payment, ocr
 
 
 @asynccontextmanager
@@ -47,6 +47,7 @@ app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(proxy.router)
 app.include_router(payment.router)
+app.include_router(ocr.router)
 
 
 @app.get("/", tags=["健康检测"])

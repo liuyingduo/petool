@@ -1191,12 +1191,7 @@ pub(crate) async fn execute_desktop(
     desktop::execute_desktop_request(conversation_id, &request, &config.desktop).await
 }
 
-pub(crate) async fn execute_image_probe(
-    arguments: &Value,
-    workspace_root: &Path,
-) -> Result<Value, String> {
-    image_tools::execute_image_probe(arguments, workspace_root).await
-}
+
 
 pub(crate) async fn execute_image_understand(
     arguments: &Value,
@@ -1639,6 +1634,7 @@ pub(crate) async fn execute_core_batch_safe_tool(
     pool: &SqlitePool,
     llm_service: &LlmService,
     image_default_model: &str,
+    petool_token: Option<&str>,
 ) -> Result<Value, String> {
     let resolved_image_model = if image_default_model.trim().is_empty() {
         "glm-4.6v"
@@ -1660,7 +1656,8 @@ pub(crate) async fn execute_core_batch_safe_tool(
         WEB_SEARCH_TOOL => execute_web_search(arguments).await,
         BROWSER_TOOL => execute_browser(arguments).await,
         BROWSER_NAVIGATE_TOOL => execute_browser_navigate(arguments).await,
-        IMAGE_PROBE_TOOL => execute_image_probe(arguments, workspace_root).await,
+        IMAGE_PROBE_TOOL => image_tools::execute_image_probe(arguments, workspace_root).await,
+        OCR_LOCATE_TOOL => image_tools::execute_ocr_locate(arguments, workspace_root, petool_token).await,
         IMAGE_UNDERSTAND_TOOL => {
             execute_image_understand(
                 arguments,
@@ -1725,6 +1722,7 @@ pub(crate) async fn execute_core_batch(
             pool,
             llm_service,
             image_default_model,
+            None, // petool_token not available in core_batch context
         )
         .await
         {
@@ -1854,7 +1852,8 @@ pub(crate) async fn execute_runtime_tool_non_scheduler(
         RuntimeTool::Browser => execute_browser(arguments).await,
         RuntimeTool::BrowserNavigate => execute_browser_navigate(arguments).await,
         RuntimeTool::Desktop => execute_desktop(arguments, conversation_id, config).await,
-        RuntimeTool::ImageProbe => execute_image_probe(arguments, workspace_root).await,
+        RuntimeTool::ImageProbe => image_tools::execute_image_probe(arguments, workspace_root).await,
+        RuntimeTool::OcrLocate => image_tools::execute_ocr_locate(arguments, workspace_root, config.petool_token.as_deref()).await,
         RuntimeTool::ImageUnderstand => {
             let image_default_model = if config.image_understand_model.trim().is_empty() {
                 "glm-4.6v"

@@ -10,12 +10,23 @@ pub(super) async fn execute_browser(arguments: &Value) -> Result<Value, String> 
     let action = read_string_argument(arguments, "action")?;
     let profile = read_optional_string_argument(arguments, "profile");
     let target_id = read_optional_string_argument(arguments, "target_id");
-    let params = arguments
+    let mut params = arguments
         .get("params")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    if params.is_string() {
+        if let Some(s) = params.as_str() {
+            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                if parsed.is_object() {
+                    params = parsed;
+                }
+            }
+        }
+    }
+
     if !params.is_object() {
-        return Err("'params' must be an object".to_string());
+        return Err(format!("'params' must be an object, got: {}", params));
     }
 
     let config = crate::utils::load_config::<Config>().map_err(|e| e.to_string())?;

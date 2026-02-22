@@ -213,7 +213,11 @@ pub(super) async fn execute_image_understand(
     llm_service: &LlmService,
     default_model: &str,
 ) -> Result<Value, String> {
-    let prompt = read_string_argument(arguments, "prompt")?;
+    let raw_prompt = read_string_argument(arguments, "prompt")?;
+    let prompt = format!(
+        "{}\n\n(System Instruction: If the user needs to interact with or click elements in a canvas, game, or UI, please proactively describe the exact coordinate positions [x, y] or bounding boxes [x, y, w, h] of those buttons/elements in the image. Do not rely on guessing. **CRITICAL INFO: if you are trying to locate text buttons to click, immediately STOP guessing using the vision model, and use the `ocr_locate` tool on the image instead for 100% accurate coordinates.**)",
+        raw_prompt
+    );
     let model = read_optional_string_argument(arguments, "model")
         .unwrap_or_else(|| default_model.to_string());
     let enable_thinking = read_bool_argument(arguments, "thinking", false);
@@ -306,4 +310,80 @@ pub(super) async fn execute_image_understand(
         "metadata": metadata,
         "response": response
     }))
+}
+
+pub(super) async fn execute_ocr_locate(
+    arguments: &Value,
+    workspace_root: &Path,
+    petool_token: Option<&str>,
+) -> Result<Value, String> {
+    let path_value = read_string_argument(arguments, "path")?;
+    let resolved = resolve_image_source_path(workspace_root, &path_value)?;
+    let file_metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
+    
+    if !file_metadata.is_file() {
+        return Err(format!("Not a file: {}", resolved.display()));
+    }
+    
+    if let Some(limit) = arguments.get("max_bytes").and_then(Value::as_u64) {
+        if limit > 0 && file_metadata.len() > limit {
+            return Err(format!("Image exceeds max_bytes ({} > {})", file_metadata.len(), limit));
+        }
+    }
+    
+    let bytes = fs::read(&resolved).map_err(|e| e.to_string())?;
+    let encoded = BASE64_STANDARD.encode(&bytes);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let request = client
+        .post("http://localhost:8000/v1/ocr/general")
+        .json(&json!({
+            "image": encoded
+        }));
+
+    let request = if let Some(token) = petool_token {
+        request.bearer_auth(token)
+    } else {
+        request
+    };
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("OCR API failed: {} - {}", status, text));
+    }
+
+    let result_json: Value = response.json().await.map_err(|e| e.to_string())?;
+    
+    if let Some(query) = read_optional_string_argument(arguments, "query") {
+        let mut filtered_results = Vec::new();
+        if let Some(words_result) = result_json.get("words_result").and_then(Value::as_array) {
+            for word_item in words_result {
+                if let Some(words) = word_item.get("words").and_then(Value::as_str) {
+                    if words.contains(&query) {
+                        filtered_results.push(word_item.clone());
+                    }
+                }
+            }
+        }
+        
+        let mut filtered_json = result_json.clone();
+        if let Some(obj) = filtered_json.as_object_mut() {
+            obj.insert("words_result".to_string(), Value::Array(filtered_results.clone()));
+            obj.insert("words_result_num".to_string(), json!(filtered_results.len()));
+        }
+        return Ok(filtered_json);
+    }
+
+    Ok(result_json)
 }

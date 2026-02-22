@@ -39,6 +39,7 @@ pub(crate) const BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
 pub(crate) const DESKTOP_TOOL: &str = "desktop";
 pub(crate) const IMAGE_PROBE_TOOL: &str = "image_probe";
 pub(crate) const IMAGE_UNDERSTAND_TOOL: &str = "image_understand";
+pub(crate) const OCR_LOCATE_TOOL: &str = "ocr_locate";
 pub(crate) const SESSIONS_LIST_TOOL: &str = "sessions_list";
 pub(crate) const SESSIONS_HISTORY_TOOL: &str = "sessions_history";
 pub(crate) const SESSIONS_SEND_TOOL: &str = "sessions_send";
@@ -87,6 +88,7 @@ pub(crate) enum RuntimeTool {
     Desktop,
     ImageProbe,
     ImageUnderstand,
+    OcrLocate,
     SessionsList,
     SessionsHistory,
     SessionsSend,

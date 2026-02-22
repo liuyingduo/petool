@@ -37,6 +37,7 @@ pub(crate) const BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
 pub(crate) const DESKTOP_TOOL: &str = "desktop";
 pub(crate) const IMAGE_PROBE_TOOL: &str = "image_probe";
 pub(crate) const IMAGE_UNDERSTAND_TOOL: &str = "image_understand";
+pub(crate) const OCR_LOCATE_TOOL: &str = "ocr_locate";
 pub(crate) const SESSIONS_LIST_TOOL: &str = "sessions_list";
 pub(crate) const SESSIONS_HISTORY_TOOL: &str = "sessions_history";
 pub(crate) const SESSIONS_SEND_TOOL: &str = "sessions_send";
@@ -85,6 +86,7 @@ pub(crate) enum RuntimeTool {
     Desktop,
     ImageProbe,
     ImageUnderstand,
+    OcrLocate,
     SessionsList,
     SessionsHistory,
     SessionsSend,
@@ -818,7 +820,12 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         WEB_FETCH_TOOL,
-        "Fetch URL content with retry, redirects and HTML extraction controls.".to_string(),
+        "Fetch URL content via raw HTTP (no browser, no cookies, no JavaScript execution). \
+         IMPORTANT: This tool makes a stateless HTTP request and shares NO state (cookies/login/session) \
+         with the managed browser. If you have already navigated to a page using the browser tool, \
+         do NOT use web_fetch to read that page — use browser action=snapshot to read its rendered DOM, \
+         or browser action=screenshot for visual inspection. \
+         Use web_fetch ONLY for public, static pages that do not require login or JavaScript rendering.".to_string(),
         json!({
             "type": "object",
             "properties": {
@@ -862,20 +869,20 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         BROWSER_TOOL,
-        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Snapshot returns compact text in data.refs_text (format: [eN] role \"name\" [x,y,w,h]); parse refs like [e7] and use that ref in act. Canvas/game UIs often require click coordinates: use action=act with {kind:\"click\", x, y}. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
+        "Control managed browser sessions (status/start/stop/profiles/tabs/open/focus/close/navigate/snapshot/screenshot/extract/find_elements/get_dropdown_options/act/act_batch/console/errors/requests/response_body/pdf/cookies/storage/evaluate/trace). Use this tool exclusively for browser launch/navigation/page interactions. For fast and stable interactions: snapshot after navigation or after an act failure, and use act_batch for consecutive actions. Snapshot returns compact text in data.refs_text (format: [eN] role \"name\" [x,y,w,h]); parse refs like [e7] and use that ref in act. WARNING: action=snapshot ONLY reads the page state, it DOES NOT click or interact! To actually click or type, you MUST carefully use action=act or action=act_batch. Canvas/game UIs often require click coordinates: use action=act with {kind:\"click\", x, y}. Important contract: for action=act or action=act_batch, use params.kind in each action item (never actions[].action)."
             .to_string(),
         json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "status|start|stop|profiles|tabs|open|focus|close|navigate|snapshot|screenshot|act|act_batch|console|errors|requests|response_body|pdf|cookies_get|cookies_set|cookies_clear|storage_get|storage_set|storage_clear|set_offline|set_headers|set_credentials|set_geolocation|set_media|set_timezone|set_locale|set_device|trace_start|trace_stop|evaluate|reset_profile"
+                    "description": "status|start|stop|profiles|tabs|open|focus|close|navigate|snapshot|screenshot|extract|find_elements|get_dropdown_options|act|act_batch|console|errors|requests|response_body|pdf|cookies_get|cookies_set|cookies_clear|storage_get|storage_set|storage_clear|set_offline|set_headers|set_credentials|set_geolocation|set_media|set_timezone|set_locale|set_device|trace_start|trace_stop|evaluate|reset_profile"
                 },
                 "profile": { "type": "string" },
                 "target_id": { "type": "string" },
                 "params": {
                     "type": "object",
-                    "description": "Action-specific parameters. For action=snapshot, response data uses refs_text (compact lines like [e7] textbox \"Search\" [120,340,260,36]) instead of refs array. For action=act, use {kind, ref|selector, ...}; click also supports direct coordinates {kind:\"click\", x, y} for canvas/game UIs. For action=act_batch, use {actions:[{kind, ref|selector, ...}, ...], stop_on_error?}. Valid act kinds include: click|type|press|hover|scroll|select|wait|drag. Example: {\"action\":\"act_batch\",\"params\":{\"actions\":[{\"kind\":\"type\",\"ref\":\"e7\",\"text\":\"query\"},{\"kind\":\"click\",\"ref\":\"e8\"}]}}. Do not use actions[].action."
+                    "description": "Action-specific parameters. For action=snapshot, response uses refs_text. For action=extract, use {selector, fields: {\"name\": \"h2\", \"link\": \"a@href\"}, max_results}. For action=find_elements, use {selector, attributes: [\"href\"], max_results, include_text}. For action=get_dropdown_options, use {ref: \"e12\"}. For action=act, use {kind, ref|selector, ...}; click also supports {kind:\"click\", x, y}. For action=act_batch, use {actions:[{kind, ref|selector, ...}, ...], stop_on_error?}. Valid act kinds: click|type|press|hover|scroll|select|wait|drag."
                 }
             },
             "required": ["action"]
@@ -949,7 +956,10 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
         &mut tools,
         &mut tool_map,
         IMAGE_UNDERSTAND_TOOL,
-        "Analyze an image with a vision model using a prompt. Supports workspace path or public URL."
+        "Analyze an image with a vision model using a prompt. Use for understanding visual scenes, \
+         reading non-text visual content, or asking open-ended questions about an image. \
+         WARNING: This tool's coordinates are ESTIMATES from a vision model — they may be off by 10-50px. \
+         DO NOT use for clicking: if you need to click a button with text, call ocr_locate FIRST to get accurate coordinates."
             .to_string(),
         json!({
             "type": "object",
@@ -964,6 +974,29 @@ pub(super) fn collect_core_tools() -> (Vec<ChatTool>, HashMap<String, RuntimeToo
             "required": ["prompt"]
         }),
         RuntimeTool::ImageUnderstand,
+    );
+
+    register_runtime_tool(
+        &mut tools,
+        &mut tool_map,
+        OCR_LOCATE_TOOL,
+        "REQUIRED FIRST STEP before clicking any button, menu item, or text visible in a screenshot or canvas game. \
+         Uses high-accuracy Baidu OCR to extract text string with pixel-perfect bounding boxes. \
+         Returns words_result array with each item's location.top/left/width/height in absolute screen pixels. \
+         Always call this with the screenshot path, then use the returned coordinates to click. \
+         Use the optional 'query' field to filter results to only the text you're looking to interact with. \
+         WARNING: DO NOT use this tool just to read or extract page content. If you only need to read data/text from an image, \
+         use 'image_understand' or 'web_fetch'/'browser'. This tool is STRICTLY for extracting coordinates for UI interaction.".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute path to the image/screenshot" },
+                "query": { "type": "string", "description": "Optional text to filter OCR results" },
+                "max_bytes": { "type": "integer", "description": "Default max bytes. Pass optional large limit if needed." }
+            },
+            "required": ["path"]
+        }),
+        RuntimeTool::OcrLocate,
     );
 
     register_runtime_tool(

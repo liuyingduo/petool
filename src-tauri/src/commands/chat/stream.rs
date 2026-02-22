@@ -162,9 +162,16 @@ Always discover controls before acting: get_desktop_app_info/list_windows -> sel
 Use canonical action args: set_edit_text(text), keyboard_input(keys, control_focus), wheel_mouse_input(wheel_dist), select_application_window(id,name). \
 Browser policy: all browser lifecycle/navigation/page actions must use tool=browser only; never use desktop.launch_application or desktop.close_application for browsers. \
 For browser action=act or action=act_batch, action items must use field `kind` (not `action`). \
+PLANNING FIRST — before executing any browser task involving multiple inputs or clicks, mentally plan the full action chain (snapshot → determine refs/coords → build act_batch) and output it as a single act_batch. Do not execute step-by-step with snapshot calls in between. \
+EFFICIENCY RULE — act_batch is mandatory for sequential actions: fill forms, enter search criteria, and click submit ALL in one act_batch. Do NOT call individual act per field, and do NOT snapshot between actions — snapshot only after the full batch finishes and you need to verify rendered content. \
+Interaction preference: if there is a visible search/submit button across the form, ALWAYS prefer clicking that button (e.g., {kind:\"click\", ref:\"...\"}) over pressing Enter in the text field. Pressing Enter should only be used as a fallback if no submit button exists. \
+Timing/wait between actions: use {kind:\"wait\", timeout_ms:N} as an item in act_batch to pause N milliseconds between steps when the page needs time to react (e.g. after opening a dropdown, after typing in an autocomplete field). Use {kind:\"wait\", selector:\".classname\"} to wait until a specific element appears. Use {kind:\"wait\", url:\"pattern\"} to wait for navigation. Default to 300-600ms for UI animations, 800-1500ms after submit before reading results. \
+WARNING: action=snapshot ONLY reads the page state, it DOES NOT click or interact! To actually click or type, you MUST carefully use action=act or action=act_batch. \
 For browser action=snapshot, parse refs from data.refs_text lines like [e7] textbox \"Search\" [120,340,260,36], then pass ref=e7 into act/act_batch. \
 For canvas/game UIs where refs are unavailable, use browser action=act with {kind:\"click\", x, y}; do not send text-only click params. \
-Use click_on_coordinates only as fallback when the target control is missing from control list."
+Use click_on_coordinates only as fallback when the target control is missing from control list. \
+Advanced actions: Use action=extract with {selector, fields} to extract structured data lists directly (format: {\"selector\":\".item\",\"fields\":{\"title\":\"h2\", \"url\":\"a@href\"}}). Use action=find_elements for robust element scanning. Use action=get_dropdown_options with {ref} to retrieve available options of a <select> element. \
+Tab management: If a click opens a new tab, use action=tabs to list them, action=focus with {target_id} to switch to the new tab, and action=close with {target_id} when done."
     } else {
         "Tool selection policy: \
 Prefer bash for filesystem-heavy tasks such as recursive traversal, counting files, computing folder size, extension/type statistics, sorting/filtering large file lists, and bulk inventory. \
